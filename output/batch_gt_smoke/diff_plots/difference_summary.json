@@ -1,0 +1,129 @@
+{
+  "dataset_root": "/gpfs/accounts/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset",
+  "estimates_dir": "output/batch_gt_smoke/estimates",
+  "align": "se3",
+  "rows": [
+    {
+      "seq": "00",
+      "num_poses": 25,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 0.3458866820222603,
+      "trans_mean_m": 0.2791537211181616,
+      "rot_rmse_deg": 12.908332635183047,
+      "rot_mean_deg": 12.907108820846627,
+      "plot_path": "output/batch_gt_smoke/diff_plots/seq_00_comparison.png"
+    },
+    {
+      "seq": "01",
+      "num_poses": 25,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 0.5270888514791432,
+      "trans_mean_m": 0.4426931623967809,
+      "rot_rmse_deg": 1.3073638931124132,
+      "rot_mean_deg": 1.3059236917773078,
+      "plot_path": "output/batch_gt_smoke/diff_plots/seq_01_comparison.png"
+    },
+    {
+      "seq": "02",
+      "num_poses": 25,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 0.08443124431386509,
+      "trans_mean_m": 0.07629728185450885,
+      "rot_rmse_deg": 156.81338863959243,
+      "rot_mean_deg": 156.81338525262478,
+      "plot_path": "output/batch_gt_smoke/diff_plots/seq_02_comparison.png"
+    },
+    {
+      "seq": "03",
+      "num_poses": 25,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 0.02698248679594741,
+      "trans_mean_m": 0.023774848640378446,
+      "rot_rmse_deg": 62.615009367137596,
+      "rot_mean_deg": 62.61500353991005,
+      "plot_path": "output/batch_gt_smoke/diff_plots/seq_03_comparison.png"
+    },
+    {
+      "seq": "04",
+      "num_poses": 25,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 0.14926810841554883,
+      "trans_mean_m": 0.13773056342491663,
+      "rot_rmse_deg": 76.28540531261307,
+      "rot_mean_deg": 76.28533038843854,
+      "plot_path": "output/batch_gt_smoke/diff_plots/seq_04_comparison.png"
+    },
+    {
+      "seq": "05",
+      "num_poses": 25,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 0.08751381309872416,
+      "trans_mean_m": 0.07491549684308552,
+      "rot_rmse_deg": 37.39590940699385,
+      "rot_mean_deg": 37.39588837406258,
+      "plot_path": "output/batch_gt_smoke/diff_plots/seq_05_comparison.png"
+    },
+    {
+      "seq": "06",
+      "num_poses": 25,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 0.12465483035871526,
+      "trans_mean_m": 0.10680471284765948,
+      "rot_rmse_deg": 19.687956103706004,
+      "rot_mean_deg": 19.686123620292015,
+      "plot_path": "output/batch_gt_smoke/diff_plots/seq_06_comparison.png"
+    },
+    {
+      "seq": "07",
+      "num_poses": 25,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 0.030266988832845218,
+      "trans_mean_m": 0.028669482161842334,
+      "rot_rmse_deg": 0.6552448331811442,
+      "rot_mean_deg": 0.6549896309330977,
+      "plot_path": "output/batch_gt_smoke/diff_plots/seq_07_comparison.png"
+    },
+    {
+      "seq": "08",
+      "num_poses": 25,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 0.24594100293328924,
+      "trans_mean_m": 0.21101709381983916,
+      "rot_rmse_deg": 90.71980686642559,
+      "rot_mean_deg": 90.71979931793311,
+      "plot_path": "output/batch_gt_smoke/diff_plots/seq_08_comparison.png"
+    },
+    {
+      "seq": "09",
+      "num_poses": 25,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 0.03413043981963729,
+      "trans_mean_m": 0.02881601091395301,
+      "rot_rmse_deg": 2.984693397484038,
+      "rot_mean_deg": 2.983946284990923,
+      "plot_path": "output/batch_gt_smoke/diff_plots/seq_09_comparison.png"
+    },
+    {
+      "seq": "10",
+      "num_poses": 25,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 0.05813528708787141,
+      "trans_mean_m": 0.05565641273805665,
+      "rot_rmse_deg": 3.8469073943692673,
+      "rot_mean_deg": 3.835901352102296,
+      "plot_path": "output/batch_gt_smoke/diff_plots/seq_10_comparison.png"
+    }
+  ],
+  "summary_plot": "output/batch_gt_smoke/diff_plots/summary_trans_rot_rmse.png"
+}

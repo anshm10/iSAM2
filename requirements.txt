@@ -1,0 +1,7 @@
+numpy>=2.0,<3.0
+# Optional (only needed for plotting)
+matplotlib>=3.7
+opencv-python>=4.12
+scipy>=1.10
+pillow>=9.0
+gtsam>=4.2
