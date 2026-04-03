@@ -1,0 +1,2 @@
+accepted_transitions,ate_rmse_m,ate_rot_rmse_deg,fallback_transitions,loop_closures_added,mode,num_poses,rpe_rot_rmse_d100_deg,rpe_rot_rmse_d10_deg,rpe_rot_rmse_d1_deg,rpe_trans_rmse_d100_m,rpe_trans_rmse_d10_m,rpe_trans_rmse_d1_m,runtime_sec,seq
+349,1.9043066632487866,4.8928974453400755,0,284,loop-closure,350,6.999913943628096,3.6734702583503287,1.0481283096290053,2.714253100426644,0.5757171521295044,0.1516927299720805,431.4632432460785,00

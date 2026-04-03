@@ -24,12 +24,14 @@ class IsamUpdateStats:
 
 
 class Isam2PoseGraph:
-    """Incremental SE(3) pose graph using odometry-only BetweenFactors."""
+    """Incremental SE(3) pose graph using odometry and optional loop-closure factors."""
 
     def __init__(
         self,
         trans_sigma_m: float = 0.15,
         rot_sigma_rad: float = 0.05,
+        loop_trans_sigma_m: float = 0.25,
+        loop_rot_sigma_rad: float = 0.08,
         prior_trans_sigma_m: float = 1e-6,
         prior_rot_sigma_rad: float = 1e-6,
         relinearize_skip: int = 1,
@@ -50,6 +52,19 @@ class Isam2PoseGraph:
                     trans_sigma_m,
                     trans_sigma_m,
                     trans_sigma_m,
+                ],
+                dtype=np.float64,
+            )
+        )
+        self.loop_noise = gtsam.noiseModel.Diagonal.Sigmas(
+            np.array(
+                [
+                    loop_rot_sigma_rad,
+                    loop_rot_sigma_rad,
+                    loop_rot_sigma_rad,
+                    loop_trans_sigma_m,
+                    loop_trans_sigma_m,
+                    loop_trans_sigma_m,
                 ],
                 dtype=np.float64,
             )
@@ -97,6 +112,27 @@ class Isam2PoseGraph:
         self.latest_idx = curr_idx
 
         return IsamUpdateStats(frame_idx=curr_idx, used_fallback_motion=False)
+
+    def add_loop_closure(self, src_idx: int, dst_idx: int, t_src_to_dst: np.ndarray) -> None:
+        if src_idx == dst_idx:
+            raise ValueError("Loop closure requires different node indices")
+
+        if src_idx > self.latest_idx or dst_idx > self.latest_idx:
+            raise ValueError("Loop closure indices must already exist in graph")
+
+        measurement = _pose3_from_matrix(t_src_to_dst)
+        self.pending_graph.add(
+            gtsam.BetweenFactorPose3(X(src_idx), X(dst_idx), measurement, self.loop_noise)
+        )
+
+        self.isam.update(self.pending_graph, gtsam.Values())
+        self.pending_graph = gtsam.NonlinearFactorGraph()
+
+    def pose_matrix(self, idx: int) -> np.ndarray:
+        estimate = self.isam.calculateEstimate()
+        if not estimate.exists(X(idx)):
+            raise KeyError(f"Estimate missing node X({idx})")
+        return _matrix_from_pose3(estimate.atPose3(X(idx)))
 
     def trajectory_matrices(self) -> np.ndarray:
         estimate = self.isam.calculateEstimate()

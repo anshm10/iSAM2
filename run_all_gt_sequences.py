@@ -40,6 +40,64 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional comma-separated sequence ids (e.g. 00,01,02). Default: auto from poses/*.txt",
     )
+    ap.add_argument(
+        "--enable-loop-closure",
+        action="store_true",
+        help="Enable loop-closure mode during sequence runs.",
+    )
+    ap.add_argument(
+        "--loop-min-separation",
+        type=int,
+        default=120,
+        help="Minimum frame gap between loop-linked frames.",
+    )
+    ap.add_argument(
+        "--loop-search-radius-m",
+        type=float,
+        default=8.0,
+        help="Maximum estimated spatial distance for loop candidate retrieval.",
+    )
+    ap.add_argument(
+        "--loop-max-candidates",
+        type=int,
+        default=3,
+        help="Maximum loop candidates to verify per frame.",
+    )
+    ap.add_argument(
+        "--loop-min-inliers",
+        type=int,
+        default=45,
+        help="Minimum geometric inliers to accept a loop closure.",
+    )
+    ap.add_argument(
+        "--loop-use-appearance-scan",
+        action="store_true",
+        help="Enable appearance-based loop-candidate retrieval fallback.",
+    )
+    ap.add_argument(
+        "--loop-appearance-stride",
+        type=int,
+        default=20,
+        help="Frame stride for appearance-based historical scan.",
+    )
+    ap.add_argument(
+        "--loop-appearance-min-matches",
+        type=int,
+        default=80,
+        help="Minimum descriptor matches to keep an appearance candidate.",
+    )
+    ap.add_argument(
+        "--loop-consistency-trans-m",
+        type=float,
+        default=10.0,
+        help="Max translation disagreement to accept loop closure against current estimate.",
+    )
+    ap.add_argument(
+        "--loop-consistency-rot-deg",
+        type=float,
+        default=35.0,
+        help="Max rotation disagreement to accept loop closure against current estimate.",
+    )
     return ap.parse_args()
 
 
@@ -52,9 +110,11 @@ def discover_gt_sequences(dataset_root: Path) -> list[str]:
 def extract_summary_row(result: dict) -> dict:
     row = {
         "seq": result["seq"],
+        "mode": result.get("mode", "base"),
         "num_poses": result["num_poses"],
         "accepted_transitions": result["accepted_transitions"],
         "fallback_transitions": result["fallback_transitions"],
+        "loop_closures_added": result.get("loop_closures_added", 0),
     }
 
     metrics = result.get("metrics")
@@ -127,6 +187,16 @@ def main() -> None:
             min_inliers=args.min_inliers,
             fallback_no_motion=args.fallback_no_motion,
             skip_metrics=False,
+            enable_loop_closure=args.enable_loop_closure,
+            loop_min_separation=args.loop_min_separation,
+            loop_search_radius_m=args.loop_search_radius_m,
+            loop_max_candidates=args.loop_max_candidates,
+            loop_min_inliers=args.loop_min_inliers,
+            loop_use_appearance_scan=args.loop_use_appearance_scan,
+            loop_appearance_stride=args.loop_appearance_stride,
+            loop_appearance_min_matches=args.loop_appearance_min_matches,
+            loop_consistency_trans_m=args.loop_consistency_trans_m,
+            loop_consistency_rot_deg=args.loop_consistency_rot_deg,
         )
 
         elapsed = time.time() - seq_start

@@ -5,6 +5,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import List, Set, Tuple
 
 import numpy as np
 
@@ -52,6 +53,64 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip ATE/RPE computation against ground truth.",
     )
+    ap.add_argument(
+        "--enable-loop-closure",
+        action="store_true",
+        help="Enable geometric loop-closure candidate search and add loop factors.",
+    )
+    ap.add_argument(
+        "--loop-min-separation",
+        type=int,
+        default=120,
+        help="Minimum frame gap between current frame and loop candidate.",
+    )
+    ap.add_argument(
+        "--loop-search-radius-m",
+        type=float,
+        default=8.0,
+        help="Candidate search radius in estimated trajectory space (meters).",
+    )
+    ap.add_argument(
+        "--loop-max-candidates",
+        type=int,
+        default=3,
+        help="Maximum loop candidates to verify per frame.",
+    )
+    ap.add_argument(
+        "--loop-min-inliers",
+        type=int,
+        default=45,
+        help="Minimum inliers required to accept a loop-closure measurement.",
+    )
+    ap.add_argument(
+        "--loop-use-appearance-scan",
+        action="store_true",
+        help="Enable appearance-based candidate retrieval when spatial candidates are absent.",
+    )
+    ap.add_argument(
+        "--loop-appearance-stride",
+        type=int,
+        default=20,
+        help="Stride for historical frame scan during appearance-based retrieval.",
+    )
+    ap.add_argument(
+        "--loop-appearance-min-matches",
+        type=int,
+        default=80,
+        help="Minimum descriptor matches to keep an appearance-based loop candidate.",
+    )
+    ap.add_argument(
+        "--loop-consistency-trans-m",
+        type=float,
+        default=10.0,
+        help="Max translation disagreement (m) between candidate loop measurement and current graph estimate.",
+    )
+    ap.add_argument(
+        "--loop-consistency-rot-deg",
+        type=float,
+        default=35.0,
+        help="Max rotation disagreement (deg) between candidate loop measurement and current graph estimate.",
+    )
     return ap.parse_args()
 
 
@@ -72,6 +131,159 @@ def _summarize(gt: np.ndarray, est: np.ndarray) -> dict:
     return {"ATE": ate, "RPE": rpe}
 
 
+def _refresh_positions_from_backend(backend: Isam2PoseGraph, positions: List[np.ndarray]) -> None:
+    traj = backend.trajectory_matrices()
+    positions.clear()
+    for t in traj:
+        positions.append(t[:3, 3].copy())
+
+
+def _descriptor_for_frame(
+    frame_idx: int,
+    loader: KITTISequenceLoader,
+    vo: StereoVisualOdometry,
+    desc_cache: dict[int, np.ndarray | None],
+) -> np.ndarray | None:
+    if frame_idx in desc_cache:
+        return desc_cache[frame_idx]
+
+    left, _, _ = loader.read_stereo(frame_idx)
+    _, desc = vo._detect(left)
+    desc_cache[frame_idx] = desc
+    return desc
+
+
+def _try_add_loop_closures(
+    curr_idx: int,
+    left_curr: np.ndarray,
+    loader: KITTISequenceLoader,
+    vo: StereoVisualOdometry,
+    backend: Isam2PoseGraph,
+    est_positions: List[np.ndarray],
+    added_pairs: Set[Tuple[int, int]],
+    loop_min_separation: int,
+    loop_search_radius_m: float,
+    loop_max_candidates: int,
+    loop_min_inliers: int,
+    loop_use_appearance_scan: bool,
+    loop_appearance_stride: int,
+    loop_appearance_min_matches: int,
+    loop_consistency_trans_m: float,
+    loop_consistency_rot_deg: float,
+    desc_cache: dict[int, np.ndarray | None],
+) -> List[dict]:
+    if curr_idx < loop_min_separation:
+        return []
+
+    curr_pos = est_positions[curr_idx]
+    candidate_limit = curr_idx - loop_min_separation
+    if candidate_limit <= 0:
+        return []
+
+    dists: List[Tuple[float, int, str, float]] = []
+    for j in range(candidate_limit):
+        if (j, curr_idx) in added_pairs:
+            continue
+        dist = float(np.linalg.norm(curr_pos - est_positions[j]))
+        if dist <= loop_search_radius_m:
+            dists.append((dist, j, "spatial", dist))
+
+    if not dists and loop_use_appearance_scan:
+        _, desc_curr = vo._detect(left_curr)
+        if desc_curr is not None and desc_curr.shape[0] >= 16:
+            stride = max(1, loop_appearance_stride)
+            appearance_candidates: List[Tuple[float, int, str, float]] = []
+            for j in range(0, candidate_limit, stride):
+                if (j, curr_idx) in added_pairs:
+                    continue
+                desc_j = _descriptor_for_frame(j, loader, vo, desc_cache)
+                if desc_j is None or desc_j.shape[0] < 16:
+                    continue
+
+                good = vo._knn_ratio_matches(desc_j, desc_curr)
+                if len(good) < loop_appearance_min_matches:
+                    continue
+
+                # Use inverse match count as a sort key: more matches -> smaller key.
+                spatial_dist = float(np.linalg.norm(curr_pos - est_positions[j]))
+                appearance_candidates.append((1.0 / float(len(good)), j, "appearance", spatial_dist))
+
+            appearance_candidates.sort(key=lambda x: x[0])
+            dists.extend(appearance_candidates[: max(1, loop_max_candidates)])
+
+    if not dists:
+        return []
+
+    dists.sort(key=lambda x: x[0])
+    accepted: List[dict] = []
+
+    for score, j, candidate_type, spatial_dist in dists[: max(1, loop_max_candidates)]:
+        left_j, right_j, _ = loader.read_stereo(j)
+        loop_est = vo.estimate_prev_to_curr(left_j, right_j, left_curr)
+        used_fallback_2d2d = False
+        if loop_est is None:
+            loop_est = vo.estimate_prev_to_curr_2d2d(
+                left_j,
+                left_curr,
+                min_inliers=max(20, loop_min_inliers // 2),
+            )
+            if loop_est is not None:
+                # 2D-2D pose has unknown scale: use current estimated inter-node distance.
+                t_norm = float(np.linalg.norm(loop_est.t_prev_to_curr[:3, 3]))
+                if t_norm > 1e-9:
+                    scale = max(spatial_dist, 1e-3) / t_norm
+                    loop_est.t_prev_to_curr[:3, 3] *= scale
+                used_fallback_2d2d = True
+
+        if loop_est is None or loop_est.inliers < loop_min_inliers:
+            continue
+
+        # Reject loop candidates that strongly disagree with current graph geometry.
+        t_src = backend.pose_matrix(j)
+        t_dst = backend.pose_matrix(curr_idx)
+        pred_src_dst = np.linalg.inv(t_src) @ t_dst
+        meas_src_dst = loop_est.t_prev_to_curr
+
+        trans_disagreement = float(np.linalg.norm(pred_src_dst[:3, 3] - meas_src_dst[:3, 3]))
+        r_diff = pred_src_dst[:3, :3].T @ meas_src_dst[:3, :3]
+        cos_theta = float((np.trace(r_diff) - 1.0) * 0.5)
+        cos_theta = max(-1.0, min(1.0, cos_theta))
+        rot_disagreement_deg = float(np.degrees(np.arccos(cos_theta)))
+
+        if (
+            trans_disagreement > loop_consistency_trans_m
+            or rot_disagreement_deg > loop_consistency_rot_deg
+        ):
+            continue
+
+        try:
+            backend.add_loop_closure(j, curr_idx, loop_est.t_prev_to_curr)
+        except RuntimeError as exc:
+            print(f"[WARN] loop insertion rejected at ({j},{curr_idx}): {exc}")
+            continue
+
+        added_pairs.add((j, curr_idx))
+        accepted.append(
+            {
+                "from_idx": int(j),
+                "to_idx": int(curr_idx),
+                "candidate_distance_m": spatial_dist,
+                "candidate_score": score,
+                "candidate_type": candidate_type,
+                "inliers": int(loop_est.inliers),
+                "matches": int(loop_est.total_matches),
+                "used_fallback_2d2d": used_fallback_2d2d,
+                "consistency_trans_disagreement_m": trans_disagreement,
+                "consistency_rot_disagreement_deg": rot_disagreement_deg,
+            }
+        )
+
+    if accepted:
+        _refresh_positions_from_backend(backend, est_positions)
+
+    return accepted
+
+
 def run_sequence(
     dataset_root: str,
     seq: str,
@@ -81,6 +293,16 @@ def run_sequence(
     min_inliers: int,
     fallback_no_motion: bool,
     skip_metrics: bool,
+    enable_loop_closure: bool = False,
+    loop_min_separation: int = 120,
+    loop_search_radius_m: float = 8.0,
+    loop_max_candidates: int = 3,
+    loop_min_inliers: int = 45,
+    loop_use_appearance_scan: bool = False,
+    loop_appearance_stride: int = 20,
+    loop_appearance_min_matches: int = 80,
+    loop_consistency_trans_m: float = 10.0,
+    loop_consistency_rot_deg: float = 35.0,
 ) -> dict:
     loader = KITTISequenceLoader(dataset_root, seq)
     vo = StereoVisualOdometry(loader.calib, min_pnp_inliers=min_inliers)
@@ -94,6 +316,11 @@ def run_sequence(
 
     accepted = 0
     fallback_used = 0
+    loop_closures_added = 0
+    loop_pairs: List[dict] = []
+    added_pairs: Set[Tuple[int, int]] = set()
+    est_positions: List[np.ndarray] = [backend.pose_matrix(0)[:3, 3].copy()]
+    desc_cache: dict[int, np.ndarray | None] = {}
 
     for i in range(1, num_frames):
         left_curr, right_curr, _ = loader.read_stereo(i)
@@ -113,13 +340,42 @@ def run_sequence(
 
         backend.add_odometry(i - 1, i, t_prev_curr)
 
+        est_positions.append(backend.pose_matrix(i)[:3, 3].copy())
+
+        if enable_loop_closure:
+            accepted_loops = _try_add_loop_closures(
+                curr_idx=i,
+                left_curr=left_curr,
+                loader=loader,
+                vo=vo,
+                backend=backend,
+                est_positions=est_positions,
+                added_pairs=added_pairs,
+                loop_min_separation=loop_min_separation,
+                loop_search_radius_m=loop_search_radius_m,
+                loop_max_candidates=loop_max_candidates,
+                loop_min_inliers=loop_min_inliers,
+                loop_use_appearance_scan=loop_use_appearance_scan,
+                loop_appearance_stride=loop_appearance_stride,
+                loop_appearance_min_matches=loop_appearance_min_matches,
+                loop_consistency_trans_m=loop_consistency_trans_m,
+                loop_consistency_rot_deg=loop_consistency_rot_deg,
+                desc_cache=desc_cache,
+            )
+            if accepted_loops:
+                loop_closures_added += len(accepted_loops)
+                loop_pairs.extend(accepted_loops)
+                print(
+                    f"[LOOP] seq={seq} frame={i}: added {len(accepted_loops)} closure(s)"
+                )
+
         left_prev = left_curr
         right_prev = right_curr
 
         if i % 100 == 0:
             print(
                 f"seq={seq} processed {i}/{num_frames - 1} | "
-                f"accepted={accepted} fallback={fallback_used}"
+                f"accepted={accepted} fallback={fallback_used} loops={loop_closures_added}"
             )
 
     est = backend.trajectory_matrices()
@@ -130,9 +386,12 @@ def run_sequence(
 
     result = {
         "seq": f"{int(seq):02d}",
+        "mode": "loop-closure" if enable_loop_closure else "base",
         "num_poses": int(est.shape[0]),
         "accepted_transitions": int(accepted),
         "fallback_transitions": int(fallback_used),
+        "loop_closures_added": int(loop_closures_added),
+        "loop_closure_pairs": loop_pairs,
         "est_path": str(output_path),
     }
 
@@ -165,6 +424,16 @@ def main() -> None:
         min_inliers=args.min_inliers,
         fallback_no_motion=args.fallback_no_motion,
         skip_metrics=args.skip_metrics,
+        enable_loop_closure=args.enable_loop_closure,
+        loop_min_separation=args.loop_min_separation,
+        loop_search_radius_m=args.loop_search_radius_m,
+        loop_max_candidates=args.loop_max_candidates,
+        loop_min_inliers=args.loop_min_inliers,
+        loop_use_appearance_scan=args.loop_use_appearance_scan,
+        loop_appearance_stride=args.loop_appearance_stride,
+        loop_appearance_min_matches=args.loop_appearance_min_matches,
+        loop_consistency_trans_m=args.loop_consistency_trans_m,
+        loop_consistency_rot_deg=args.loop_consistency_rot_deg,
     )
 
 

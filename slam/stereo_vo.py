@@ -152,3 +152,54 @@ class StereoVisualOdometry:
             inliers=int(len(inliers)),
             total_matches=int(len(temporal_matches)),
         )
+
+    def estimate_prev_to_curr_2d2d(
+        self,
+        left_prev: np.ndarray,
+        left_curr: np.ndarray,
+        min_inliers: int = 30,
+    ) -> MotionEstimate | None:
+        """Fallback relative pose using only 2D-2D correspondences and epipolar geometry.
+
+        Translation magnitude is arbitrary (up-to-scale) and should be scaled by caller.
+        """
+        kp_prev, desc_prev = self._detect(left_prev)
+        kp_curr, desc_curr = self._detect(left_curr)
+        if (
+            desc_prev is None
+            or desc_curr is None
+            or len(kp_prev) < 20
+            or len(kp_curr) < 20
+        ):
+            return None
+
+        matches = self._knn_ratio_matches(desc_prev, desc_curr)
+        if len(matches) < 20:
+            return None
+
+        pts_prev = np.asarray([kp_prev[m.queryIdx].pt for m in matches], dtype=np.float32)
+        pts_curr = np.asarray([kp_curr[m.trainIdx].pt for m in matches], dtype=np.float32)
+
+        e, inlier_mask = cv2.findEssentialMat(
+            pts_prev,
+            pts_curr,
+            self.calib.k_left,
+            method=cv2.RANSAC,
+            prob=0.999,
+            threshold=1.5,
+        )
+        if e is None or inlier_mask is None:
+            return None
+
+        inlier_count, r, t, _ = cv2.recoverPose(e, pts_prev, pts_curr, self.calib.k_left)
+        if inlier_count < min_inliers:
+            return None
+
+        t_prev_curr = np.eye(4, dtype=np.float64)
+        t_prev_curr[:3, :3] = r.astype(np.float64)
+        t_prev_curr[:3, 3] = t.reshape(3).astype(np.float64)
+        return MotionEstimate(
+            t_prev_to_curr=t_prev_curr,
+            inliers=int(inlier_count),
+            total_matches=int(len(matches)),
+        )

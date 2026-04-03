@@ -1,0 +1,18 @@
+{
+  "align": "se3",
+  "num_poses": 350,
+  "base": {
+    "ATE_trans_rmse_m": 0.6750148587952866,
+    "ATE_rot_rmse_deg": 1.3002798143077596
+  },
+  "loop": {
+    "ATE_trans_rmse_m": 1.904306663243338,
+    "ATE_rot_rmse_deg": 4.892897445345318
+  },
+  "plots": {
+    "trajectory": "output/loop_eval/comparison_plots/trajectory_base_vs_loop.png",
+    "translation_error": "output/loop_eval/comparison_plots/translation_error_base_vs_loop.png",
+    "rotation_error": "output/loop_eval/comparison_plots/rotation_error_base_vs_loop.png",
+    "ate_rmse": "output/loop_eval/comparison_plots/ate_rmse_base_vs_loop.png"
+  }
+}

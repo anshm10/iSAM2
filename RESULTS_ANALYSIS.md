@@ -246,3 +246,182 @@ Recommended next steps:
 2. Add orientation-focused diagnostics (yaw drift plots) and outlier statistics.
 3. Tune VO thresholds and iSAM2 noise models per sequence characteristics.
 4. Add loop-closure constraints to reduce accumulated orientation drift.
+
+---
+
+## 8. Loop Closure Extension (New)
+This section documents the newly implemented loop-closure mode, its CLI usage, and quantitative comparison against the base iSAM2 pipeline.
+
+### 8.1 What was implemented
+Loop closure was added as an optional mode on top of the existing odometry-only graph.
+
+#### New/updated code paths
+1. `slam/isam2_backend.py`
+- Added loop-closure noise model.
+- Added `add_loop_closure(src_idx, dst_idx, T_src_dst)` to insert non-consecutive BetweenFactors.
+- Added `pose_matrix(idx)` accessor used during loop candidate consistency checks.
+
+2. `slam/stereo_vo.py`
+- Added `estimate_prev_to_curr_2d2d(...)` as a fallback relative-pose estimator from 2D-2D correspondences (up-to-scale), used only for loop candidate verification fallback.
+
+3. `run_isam2_kitti.py`
+- Added loop-closure CLI flags:
+  - `--enable-loop-closure`
+  - `--loop-min-separation`
+  - `--loop-search-radius-m`
+  - `--loop-max-candidates`
+  - `--loop-min-inliers`
+  - `--loop-use-appearance-scan`
+  - `--loop-appearance-stride`
+  - `--loop-appearance-min-matches`
+  - `--loop-consistency-trans-m`
+  - `--loop-consistency-rot-deg`
+- Added loop candidate generation and verification.
+- Added consistency gating against current graph estimate before accepting loop constraints.
+- Added loop metadata in output summary (`mode`, `loop_closures_added`, `loop_closure_pairs`).
+
+4. `run_all_gt_sequences.py`
+- Added pass-through CLI options for loop-closure parameters.
+- Summary rows now include `mode` and `loop_closures_added`.
+
+5. `plot_base_vs_loop.py` (new)
+- Added direct base-vs-loop comparison plotting against GT.
+- Produces trajectory overlays, per-frame error curves, and RMSE comparison figures.
+
+### 8.2 Loop closure strategy
+For each frame `i` (after odometry update):
+1. Retrieve candidate past frames `j` with `j <= i - loop_min_separation`.
+2. Prioritize spatially close candidates in estimated trajectory space.
+3. Optionally fall back to appearance retrieval if spatial candidates are absent.
+4. Verify geometric consistency using stereo PnP-based relative motion (with 2D-2D fallback).
+5. Reject candidate if it disagrees too much with current graph relative pose estimate.
+6. Insert a loop BetweenFactor only for accepted candidates.
+
+---
+
+## 9. Base vs Loop-Closure Evaluation (Seq 00, 350 frames)
+
+### 9.1 Experimental setup
+- Sequence: `00`
+- Frames: first `350`
+- Alignment for metrics: `SE(3)`
+- Base run output:
+  - `output/loop_eval/base_batch_00_350/`
+- Loop run output:
+  - `output/loop_eval/loop_batch_00_350/`
+- Loop config used:
+  - `--loop-min-separation 20`
+  - `--loop-search-radius-m 50`
+  - `--loop-max-candidates 4`
+  - `--loop-min-inliers 30`
+  - `--loop-consistency-trans-m 8`
+  - `--loop-consistency-rot-deg 25`
+
+Accepted loop closures in this run:
+- `284`
+
+### 9.2 Quantitative comparison
+
+| Metric | Base | Loop Closure | Relative Change |
+|---|---:|---:|---:|
+| ATE trans RMSE (m) | 0.6750 | 1.9043 | +182.1% |
+| ATE rot RMSE (deg) | 1.3003 | 4.8929 | +276.3% |
+| RPE d1 trans RMSE (m) | 0.0317 | 0.1517 | +378.3% |
+| RPE d1 rot RMSE (deg) | 0.0940 | 1.0481 | +1014.5% |
+| RPE d10 trans RMSE (m) | 0.1780 | 0.5757 | +223.5% |
+| RPE d10 rot RMSE (deg) | 0.4309 | 3.6735 | +752.5% |
+| RPE d100 trans RMSE (m) | 1.1486 | 2.7143 | +136.3% |
+| RPE d100 rot RMSE (deg) | 1.9245 | 6.9999 | +263.7% |
+
+### 9.3 Interpretation
+For this configuration and horizon, loop closure **degraded** trajectory quality versus the base odometry-only graph.
+
+Likely reasons:
+1. Too many accepted loop constraints (`284` over `350` poses) over-constrained the graph with noisy/non-loop links.
+2. Candidate generation was intentionally permissive to exercise the feature, but this increased false-positive closures.
+3. Current loop verification uses local geometric checks only; no global place-recognition confidence or robust switchable constraints are used yet.
+
+### 9.4 Comparison figures
+- Trajectory overlay: ![Trajectory Base vs Loop](output/loop_eval/comparison_plots/trajectory_base_vs_loop.png)
+- Per-frame translation error: ![Translation Error](output/loop_eval/comparison_plots/translation_error_base_vs_loop.png)
+- Per-frame rotation error: ![Rotation Error](output/loop_eval/comparison_plots/rotation_error_base_vs_loop.png)
+- ATE RMSE bars: ![ATE RMSE](output/loop_eval/comparison_plots/ate_rmse_base_vs_loop.png)
+
+Artifacts:
+- `output/loop_eval/comparison_plots/base_vs_loop_summary.json`
+
+---
+
+## 10. Run Guide: Base vs Loop-Closure
+
+### 10.1 Run base iSAM2 (single sequence)
+```bash
+python3 run_isam2_kitti.py \
+  --dataset-root ../../../scratch/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset \
+  --seq 00 \
+  --max-frames 350 \
+  --fallback-no-motion \
+  --output output/loop_eval/base_00_350.txt \
+  --metrics-out output/loop_eval/base_metrics_00_350.json
+```
+
+### 10.2 Run iSAM2 with loop closure (single sequence)
+```bash
+python3 run_isam2_kitti.py \
+  --dataset-root ../../../scratch/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset \
+  --seq 00 \
+  --max-frames 350 \
+  --fallback-no-motion \
+  --enable-loop-closure \
+  --loop-min-separation 20 \
+  --loop-search-radius-m 50 \
+  --loop-max-candidates 4 \
+  --loop-min-inliers 30 \
+  --loop-consistency-trans-m 8 \
+  --loop-consistency-rot-deg 25 \
+  --output output/loop_eval/loop_00_350.txt \
+  --metrics-out output/loop_eval/loop_metrics_00_350.json
+```
+
+### 10.3 Run base and loop with structured summaries (batch script, seq 00)
+```bash
+python3 run_all_gt_sequences.py --sequences 00 --max-frames 350 --fallback-no-motion --output-dir output/loop_eval/base_batch_00_350
+
+python3 run_all_gt_sequences.py \
+  --sequences 00 \
+  --max-frames 350 \
+  --fallback-no-motion \
+  --enable-loop-closure \
+  --loop-min-separation 20 \
+  --loop-search-radius-m 50 \
+  --loop-max-candidates 4 \
+  --loop-min-inliers 30 \
+  --loop-consistency-trans-m 8 \
+  --loop-consistency-rot-deg 25 \
+  --output-dir output/loop_eval/loop_batch_00_350
+```
+
+### 10.4 Plot direct base-vs-loop comparison
+```bash
+python3 plot_base_vs_loop.py \
+  --gt ../../../scratch/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset/poses/00.txt \
+  --base-est output/loop_eval/base_batch_00_350/estimates/poses_est_00.txt \
+  --loop-est output/loop_eval/loop_batch_00_350/estimates/poses_est_00.txt \
+  --output-dir output/loop_eval/comparison_plots \
+  --align se3
+```
+
+---
+
+## 11. Updated Conclusion
+The repository now supports two executable modes:
+1. **Base iSAM2** (odometry-only factors)
+2. **iSAM2 + Loop Closure** (additional non-consecutive factors)
+
+In the tested Seq-00/350-frame experiment, the current loop-closure configuration hurt performance relative to base iSAM2. This is still a useful result: it verifies end-to-end implementation, demonstrates a fair base-vs-loop evaluation pipeline, and highlights where loop-closure quality control must improve.
+
+Highest-priority improvements before expecting gains:
+1. Reduce false-positive loop constraints via stronger place recognition and stricter geometric checks.
+2. Limit loop insertion frequency and add temporal non-maximum suppression.
+3. Use robust loop factors (e.g., switchable constraints or robust kernels).
+4. Re-run on longer horizons and multiple sequences with conservative loop thresholds.
