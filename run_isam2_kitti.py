@@ -111,6 +111,30 @@ def parse_args() -> argparse.Namespace:
         default=35.0,
         help="Max rotation disagreement (deg) between candidate loop measurement and current graph estimate.",
     )
+    # --- Confidence weighting ---
+    ap.add_argument(
+        "--enable-conf-weighting",
+        action="store_true",
+        help="Scale odometry and loop-closure noise inversely with VO inlier confidence.",
+    )
+    ap.add_argument(
+        "--conf-base-trans-sigma",
+        type=float,
+        default=0.15,
+        help="Base translation sigma (m) for confidence weighting (at min-inliers confidence).",
+    )
+    ap.add_argument(
+        "--conf-base-rot-sigma",
+        type=float,
+        default=0.05,
+        help="Base rotation sigma (rad) for confidence weighting (at min-inliers confidence).",
+    )
+    ap.add_argument(
+        "--conf-max-scale",
+        type=float,
+        default=4.0,
+        help="Maximum confidence scale factor (caps how tight the noise can get).",
+    )
     return ap.parse_args()
 
 
@@ -171,6 +195,10 @@ def _try_add_loop_closures(
     loop_consistency_trans_m: float,
     loop_consistency_rot_deg: float,
     desc_cache: dict[int, np.ndarray | None],
+    enable_conf_weighting: bool = False,
+    conf_base_trans_sigma: float = 0.25,
+    conf_base_rot_sigma: float = 0.08,
+    conf_max_scale: float = 4.0,
 ) -> List[dict]:
     if curr_idx < loop_min_separation:
         return []
@@ -257,7 +285,18 @@ def _try_add_loop_closures(
             continue
 
         try:
-            backend.add_loop_closure(j, curr_idx, loop_est.t_prev_to_curr)
+            if enable_conf_weighting:
+                conf_scale = min(
+                    (loop_est.inliers / max(loop_min_inliers, 1)) ** 0.5,
+                    conf_max_scale,
+                )
+                loop_t_sigma = conf_base_trans_sigma / conf_scale
+                loop_r_sigma = conf_base_rot_sigma / conf_scale
+                backend.add_loop_closure_with_sigma(
+                    j, curr_idx, loop_est.t_prev_to_curr, loop_t_sigma, loop_r_sigma
+                )
+            else:
+                backend.add_loop_closure(j, curr_idx, loop_est.t_prev_to_curr)
         except RuntimeError as exc:
             print(f"[WARN] loop insertion rejected at ({j},{curr_idx}): {exc}")
             continue
@@ -303,6 +342,10 @@ def run_sequence(
     loop_appearance_min_matches: int = 80,
     loop_consistency_trans_m: float = 10.0,
     loop_consistency_rot_deg: float = 35.0,
+    enable_conf_weighting: bool = False,
+    conf_base_trans_sigma: float = 0.15,
+    conf_base_rot_sigma: float = 0.05,
+    conf_max_scale: float = 4.0,
 ) -> dict:
     loader = KITTISequenceLoader(dataset_root, seq)
     vo = StereoVisualOdometry(loader.calib, min_pnp_inliers=min_inliers)
@@ -334,11 +377,22 @@ def run_sequence(
             print(f"[WARN] seq={seq} frame={i}: VO failed, using identity fallback")
             t_prev_curr = np.eye(4, dtype=np.float64)
             fallback_used += 1
+            backend.add_odometry(i - 1, i, t_prev_curr)
         else:
             t_prev_curr = estimate.t_prev_to_curr
             accepted += 1
-
-        backend.add_odometry(i - 1, i, t_prev_curr)
+            if enable_conf_weighting:
+                # Scale noise inversely with sqrt(inliers / min_inliers), capped at conf_max_scale.
+                # More inliers → tighter noise → higher weight in the factor graph.
+                conf_scale = min(
+                    (estimate.inliers / max(min_inliers, 1)) ** 0.5,
+                    conf_max_scale,
+                )
+                odom_t_sigma = conf_base_trans_sigma / conf_scale
+                odom_r_sigma = conf_base_rot_sigma / conf_scale
+                backend.add_odometry_with_sigma(i - 1, i, t_prev_curr, odom_t_sigma, odom_r_sigma)
+            else:
+                backend.add_odometry(i - 1, i, t_prev_curr)
 
         est_positions.append(backend.pose_matrix(i)[:3, 3].copy())
 
@@ -361,6 +415,10 @@ def run_sequence(
                 loop_consistency_trans_m=loop_consistency_trans_m,
                 loop_consistency_rot_deg=loop_consistency_rot_deg,
                 desc_cache=desc_cache,
+                enable_conf_weighting=enable_conf_weighting,
+                conf_base_trans_sigma=conf_base_trans_sigma,
+                conf_base_rot_sigma=conf_base_rot_sigma,
+                conf_max_scale=conf_max_scale,
             )
             if accepted_loops:
                 loop_closures_added += len(accepted_loops)
@@ -384,9 +442,18 @@ def run_sequence(
     write_kitti_poses(output_path, est)
     print(f"Wrote estimated trajectory: {output_path} ({est.shape[0]} poses)")
 
+    if enable_conf_weighting and enable_loop_closure:
+        mode_str = "conf-wght+loop"
+    elif enable_conf_weighting:
+        mode_str = "conf-wght"
+    elif enable_loop_closure:
+        mode_str = "loop-closure"
+    else:
+        mode_str = "base"
+
     result = {
         "seq": f"{int(seq):02d}",
-        "mode": "loop-closure" if enable_loop_closure else "base",
+        "mode": mode_str,
         "num_poses": int(est.shape[0]),
         "accepted_transitions": int(accepted),
         "fallback_transitions": int(fallback_used),
@@ -434,6 +501,10 @@ def main() -> None:
         loop_appearance_min_matches=args.loop_appearance_min_matches,
         loop_consistency_trans_m=args.loop_consistency_trans_m,
         loop_consistency_rot_deg=args.loop_consistency_rot_deg,
+        enable_conf_weighting=args.enable_conf_weighting,
+        conf_base_trans_sigma=args.conf_base_trans_sigma,
+        conf_base_rot_sigma=args.conf_base_rot_sigma,
+        conf_max_scale=args.conf_max_scale,
     )
 
 
