@@ -14,6 +14,7 @@ class MotionEstimate:
     t_prev_to_curr: np.ndarray
     inliers: int
     total_matches: int
+    mean_reproj_error: float = 0.0
 
 
 class StereoVisualOdometry:
@@ -138,19 +139,24 @@ class StereoVisualOdometry:
 
         rmat, _ = cv2.Rodrigues(rvec)
 
-        # PnP returns transform that maps points from prev camera frame into current frame.
+        inlier_obj = object_points_arr[inliers.flatten()]
+        inlier_img = image_points_arr[inliers.flatten()]
+        projected, _ = cv2.projectPoints(inlier_obj, rvec, tvec, self.calib.k_left, None)
+        reproj_err = np.linalg.norm(
+            inlier_img - projected.reshape(-1, 2), axis=1
+        ).mean()
+
         t_curr_prev = np.eye(4, dtype=np.float64)
         t_curr_prev[:3, :3] = rmat.astype(np.float64)
         t_curr_prev[:3, 3] = tvec.reshape(3).astype(np.float64)
 
-        # iSAM2 between-factor convention below uses prev->curr pose increment (prev_T_curr),
-        # so invert curr_T_prev.
         t_prev_curr = np.linalg.inv(t_curr_prev)
 
         return MotionEstimate(
             t_prev_to_curr=t_prev_curr,
             inliers=int(len(inliers)),
             total_matches=int(len(temporal_matches)),
+            mean_reproj_error=float(reproj_err),
         )
 
     def estimate_prev_to_curr_2d2d(

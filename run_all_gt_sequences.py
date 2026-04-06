@@ -98,6 +98,11 @@ def parse_args() -> argparse.Namespace:
         default=35.0,
         help="Max rotation disagreement to accept loop closure against current estimate.",
     )
+    ap.add_argument(
+        "--info-weighted",
+        action="store_true",
+        help="Use information-based weighting for factor covariances.",
+    )
     return ap.parse_args()
 
 
@@ -197,6 +202,7 @@ def main() -> None:
             loop_appearance_min_matches=args.loop_appearance_min_matches,
             loop_consistency_trans_m=args.loop_consistency_trans_m,
             loop_consistency_rot_deg=args.loop_consistency_rot_deg,
+            info_weighted=args.info_weighted,
         )
 
         elapsed = time.time() - seq_start

@@ -9,7 +9,7 @@ from typing import List, Set, Tuple
 
 import numpy as np
 
-from slam.isam2_backend import Isam2PoseGraph
+from slam.isam2_backend import Isam2PoseGraph, Isam2InfoWeighted, compute_confidence
 from slam.kitti_loader import KITTISequenceLoader
 from slam.stereo_vo import StereoVisualOdometry
 
@@ -110,6 +110,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=35.0,
         help="Max rotation disagreement (deg) between candidate loop measurement and current graph estimate.",
+    )
+    ap.add_argument(
+        "--info-weighted",
+        action="store_true",
+        help="Use information-based weighting: scale each factor's covariance by VO confidence.",
     )
     return ap.parse_args()
 
@@ -303,10 +308,11 @@ def run_sequence(
     loop_appearance_min_matches: int = 80,
     loop_consistency_trans_m: float = 10.0,
     loop_consistency_rot_deg: float = 35.0,
+    info_weighted: bool = False,
 ) -> dict:
     loader = KITTISequenceLoader(dataset_root, seq)
     vo = StereoVisualOdometry(loader.calib, min_pnp_inliers=min_inliers)
-    backend = Isam2PoseGraph()
+    backend = Isam2InfoWeighted() if info_weighted else Isam2PoseGraph()
 
     num_frames = loader.num_frames()
     if max_frames > 0:
@@ -316,6 +322,7 @@ def run_sequence(
 
     accepted = 0
     fallback_used = 0
+    confidence_log: list[float] = []
     loop_closures_added = 0
     loop_pairs: List[dict] = []
     added_pairs: Set[Tuple[int, int]] = set()
@@ -334,11 +341,19 @@ def run_sequence(
             print(f"[WARN] seq={seq} frame={i}: VO failed, using identity fallback")
             t_prev_curr = np.eye(4, dtype=np.float64)
             fallback_used += 1
+            confidence = 0.1  # minimum confidence for fallback
         else:
             t_prev_curr = estimate.t_prev_to_curr
             accepted += 1
+            confidence = compute_confidence(
+                estimate.inliers, estimate.total_matches, estimate.mean_reproj_error
+            )
 
-        backend.add_odometry(i - 1, i, t_prev_curr)
+        if info_weighted:
+            backend.add_odometry_weighted(i - 1, i, t_prev_curr, confidence)
+            confidence_log.append(confidence)
+        else:
+            backend.add_odometry(i - 1, i, t_prev_curr)
 
         est_positions.append(backend.pose_matrix(i)[:3, 3].copy())
 
@@ -393,7 +408,18 @@ def run_sequence(
         "loop_closures_added": int(loop_closures_added),
         "loop_closure_pairs": loop_pairs,
         "est_path": str(output_path),
+        "info_weighted": info_weighted,
     }
+
+    if info_weighted and confidence_log:
+        c = np.array(confidence_log)
+        result["confidence_stats"] = {
+            "mean": float(c.mean()),
+            "std": float(c.std()),
+            "min": float(c.min()),
+            "max": float(c.max()),
+            "median": float(np.median(c)),
+        }
 
     if skip_metrics:
         return result
@@ -434,6 +460,7 @@ def main() -> None:
         loop_appearance_min_matches=args.loop_appearance_min_matches,
         loop_consistency_trans_m=args.loop_consistency_trans_m,
         loop_consistency_rot_deg=args.loop_consistency_rot_deg,
+        info_weighted=args.info_weighted,
     )
 
 

@@ -142,3 +142,69 @@ class Isam2PoseGraph:
                 raise KeyError(f"Estimate missing node X({i})")
             mats.append(_matrix_from_pose3(estimate.atPose3(X(i))))
         return np.stack(mats, axis=0)
+
+
+def compute_confidence(
+    inliers: int,
+    total_matches: int,
+    mean_reproj_error: float,
+    *,
+    min_confidence: float = 0.1,
+    max_confidence: float = 1.0,
+) -> float:
+    """Map VO quality signals to a confidence score in [min_confidence, max_confidence].
+
+    Signals (inlier ratio, inlier count, reprojection error) are each normalised
+    to [0,1] using KITTI-calibrated ranges and combined via geometric mean.
+    """
+    if total_matches <= 0:
+        return min_confidence
+
+    s_ratio = np.clip((inliers / total_matches - 0.5) / 0.5, 0.0, 1.0)
+    s_count = np.clip((inliers - 50) / 450.0, 0.0, 1.0)
+    s_reproj = np.clip((2.0 - mean_reproj_error) / 1.3, 0.0, 1.0)
+
+    raw = (s_ratio * s_count * s_reproj) ** (1.0 / 3.0)
+
+    c = min_confidence + (max_confidence - min_confidence) * raw
+    return float(np.clip(c, min_confidence, max_confidence))
+
+
+class Isam2InfoWeighted(Isam2PoseGraph):
+    """iSAM2 pose graph with per-factor covariance scaling: Σ' = (1/c_k) * Σ_base."""
+
+    def add_odometry_weighted(
+        self,
+        prev_idx: int,
+        curr_idx: int,
+        t_prev_to_curr: np.ndarray,
+        confidence: float,
+    ) -> IsamUpdateStats:
+        if curr_idx != prev_idx + 1:
+            raise ValueError("Only consecutive frame factors are supported")
+
+        scale = 1.0 / np.sqrt(max(confidence, 1e-6))
+        base_sigmas = np.array(self.odom_noise.sigmas(), dtype=np.float64)
+        scaled_noise = gtsam.noiseModel.Diagonal.Sigmas(base_sigmas * scale)
+
+        measurement = _pose3_from_matrix(t_prev_to_curr)
+        self.pending_graph.add(
+            gtsam.BetweenFactorPose3(
+                X(prev_idx), X(curr_idx), measurement, scaled_noise
+            )
+        )
+
+        estimate = self.isam.calculateEstimate()
+        if not estimate.exists(X(prev_idx)):
+            raise KeyError(f"Missing pose estimate for index {prev_idx}")
+
+        prev_pose = estimate.atPose3(X(prev_idx))
+        curr_guess = prev_pose.compose(measurement)
+        self.pending_init.insert(X(curr_idx), curr_guess)
+
+        self.isam.update(self.pending_graph, self.pending_init)
+        self.pending_graph = gtsam.NonlinearFactorGraph()
+        self.pending_init = gtsam.Values()
+        self.latest_idx = curr_idx
+
+        return IsamUpdateStats(frame_idx=curr_idx, used_fallback_motion=False)
