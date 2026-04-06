@@ -1,0 +1,19 @@
+{
+  "dataset_root": "/gpfs/accounts/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset",
+  "estimates_dir": "output/loop_seq00_allframes",
+  "align": "se3",
+  "rows": [
+    {
+      "seq": "00",
+      "num_poses": 4541,
+      "align": "se3",
+      "scale": 1.0,
+      "trans_rmse_m": 29.919338490615225,
+      "trans_mean_m": 24.750015779757902,
+      "rot_rmse_deg": 12.866760323812844,
+      "rot_mean_deg": 9.375106644621487,
+      "plot_path": "output/loop_seq00_allframes/plots/seq_00_comparison.png"
+    }
+  ],
+  "summary_plot": "output/loop_seq00_allframes/plots/summary_trans_rot_rmse.png"
+}
