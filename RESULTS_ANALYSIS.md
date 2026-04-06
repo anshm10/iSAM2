@@ -198,21 +198,71 @@ Each figure contains raw trajectory overlay, aligned trajectory overlay, and per
 
 ## 6. How to Run
 ### 6.1 Run one sequence
+
+Base iSAM2:
 ```bash
 python3 run_isam2_kitti.py \
   --dataset-root ../../../scratch/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset \
   --seq 00 \
   --fallback-no-motion \
-  --output output/poses_est_00.txt \
-  --metrics-out output/metrics_00.json
+  --mode base \
+  --output output/poses_est_00_base.txt \
+  --metrics-out output/metrics_00_base.json
+```
+
+iSAM2 with loop closure:
+```bash
+python3 run_isam2_kitti.py \
+  --dataset-root ../../../scratch/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset \
+  --seq 00 \
+  --fallback-no-motion \
+  --mode loop \
+  --output output/poses_est_00_loop.txt \
+  --metrics-out output/metrics_00_loop.json
+```
+
+iSAM2 with confidence weighting:
+```bash
+python3 run_isam2_kitti.py \
+  --dataset-root ../../../scratch/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset \
+  --seq 00 \
+  --fallback-no-motion \
+  --mode confidence \
+  --conf-min-noise-scale 0.8 \
+  --conf-max-noise-scale 2.5 \
+  --output output/poses_est_00_conf.txt \
+  --metrics-out output/metrics_00_conf.json
 ```
 
 ### 6.2 Run all GT sequences (00-10)
+
+Base batch:
 ```bash
 python3 run_all_gt_sequences.py \
   --dataset-root ../../../scratch/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset \
   --fallback-no-motion \
-  --output-dir output/batch_gt_full
+  --mode base \
+  --output-dir output/batch_gt_base
+```
+
+Loop-closure batch:
+```bash
+python3 run_all_gt_sequences.py \
+  --dataset-root ../../../scratch/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset \
+  --fallback-no-motion \
+  --mode loop \
+  --output-dir output/batch_gt_loop
+```
+
+Confidence-weighted batch:
+```bash
+python3 run_all_gt_sequences.py \
+  --dataset-root ../../../scratch/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset \
+  --fallback-no-motion \
+  --mode confidence \
+  --conf-min-noise-scale 0.8 \
+  --conf-max-noise-scale 2.5 \
+  --output-dir output/batch_gt_conf
 ```
 
 ### 6.3 Plot aggregate batch metrics
