@@ -111,6 +111,29 @@ def parse_args() -> argparse.Namespace:
         default=35.0,
         help="Max rotation disagreement (deg) between candidate loop measurement and current graph estimate.",
     )
+    ap.add_argument(
+        "--degeneracy-aware",
+        action="store_true",
+        help="Inflate odometry noise on ill-conditioned stereo PnP (high JᵀJ condition number).",
+    )
+    ap.add_argument(
+        "--degeneracy-cond-ref",
+        type=float,
+        default=800.0,
+        help="Reference condition number κ: noise scale grows like sqrt(max(1, κ/κ_ref)).",
+    )
+    ap.add_argument(
+        "--degeneracy-noise-max-mult",
+        type=float,
+        default=25.0,
+        help="Cap on per-edge odometry sigma multiplier when degeneracy-aware is enabled.",
+    )
+    ap.add_argument(
+        "--degeneracy-fallback-mult",
+        type=float,
+        default=None,
+        help="Odometry sigma multiplier when VO fails and --fallback-no-motion is used (default: same as --degeneracy-noise-max-mult).",
+    )
     return ap.parse_args()
 
 
@@ -129,6 +152,18 @@ def _summarize(gt: np.ndarray, est: np.ndarray) -> dict:
     ate = compute_ate(gt, est, align="se3")
     rpe = compute_rpe(gt, est, align="se3", deltas=deltas)
     return {"ATE": ate, "RPE": rpe}
+
+
+def _odom_noise_scale_from_pnp_condition(
+    cond: float,
+    cond_ref: float,
+    max_mult: float,
+) -> float:
+    if not np.isfinite(cond) or cond <= 0.0:
+        return float(max_mult)
+    ref = max(float(cond_ref), 1e-9)
+    ratio = float(np.sqrt(max(1.0, float(cond) / ref)))
+    return float(min(float(max_mult), ratio))
 
 
 def _refresh_positions_from_backend(backend: Isam2PoseGraph, positions: List[np.ndarray]) -> None:
@@ -303,6 +338,10 @@ def run_sequence(
     loop_appearance_min_matches: int = 80,
     loop_consistency_trans_m: float = 10.0,
     loop_consistency_rot_deg: float = 35.0,
+    degeneracy_aware: bool = False,
+    degeneracy_cond_ref: float = 800.0,
+    degeneracy_noise_max_mult: float = 25.0,
+    degeneracy_fallback_mult: float | None = None,
 ) -> dict:
     loader = KITTISequenceLoader(dataset_root, seq)
     vo = StereoVisualOdometry(loader.calib, min_pnp_inliers=min_inliers)
@@ -322,10 +361,24 @@ def run_sequence(
     est_positions: List[np.ndarray] = [backend.pose_matrix(0)[:3, 3].copy()]
     desc_cache: dict[int, np.ndarray | None] = {}
 
+    fb_mult = degeneracy_fallback_mult
+    if fb_mult is None:
+        fb_mult = degeneracy_noise_max_mult
+
+    degeneracy_inflated = 0
+    cond_sum_accepted = 0.0
+    cond_count_accepted = 0
+
     for i in range(1, num_frames):
         left_curr, right_curr, _ = loader.read_stereo(i)
 
-        estimate = vo.estimate_prev_to_curr(left_prev, right_prev, left_curr)
+        estimate = vo.estimate_prev_to_curr(
+            left_prev,
+            right_prev,
+            left_curr,
+            compute_observability=degeneracy_aware,
+        )
+        odom_scale = 1.0
         if estimate is None:
             if not fallback_no_motion:
                 raise RuntimeError(
@@ -334,11 +387,24 @@ def run_sequence(
             print(f"[WARN] seq={seq} frame={i}: VO failed, using identity fallback")
             t_prev_curr = np.eye(4, dtype=np.float64)
             fallback_used += 1
+            if degeneracy_aware:
+                odom_scale = float(fb_mult)
         else:
             t_prev_curr = estimate.t_prev_to_curr
             accepted += 1
+            if degeneracy_aware:
+                cond = float(estimate.pnp_condition_number)
+                cond_sum_accepted += cond
+                cond_count_accepted += 1
+                odom_scale = _odom_noise_scale_from_pnp_condition(
+                    cond,
+                    degeneracy_cond_ref,
+                    degeneracy_noise_max_mult,
+                )
+                if odom_scale > 1.0 + 1e-6:
+                    degeneracy_inflated += 1
 
-        backend.add_odometry(i - 1, i, t_prev_curr)
+        backend.add_odometry(i - 1, i, t_prev_curr, odom_noise_scale=odom_scale)
 
         est_positions.append(backend.pose_matrix(i)[:3, 3].copy())
 
@@ -384,15 +450,25 @@ def run_sequence(
     write_kitti_poses(output_path, est)
     print(f"Wrote estimated trajectory: {output_path} ({est.shape[0]} poses)")
 
+    mode_parts: List[str] = []
+    if degeneracy_aware:
+        mode_parts.append("degeneracy-aware")
+    if enable_loop_closure:
+        mode_parts.append("loop-closure")
+    mode = "+".join(mode_parts) if mode_parts else "base"
+
     result = {
         "seq": f"{int(seq):02d}",
-        "mode": "loop-closure" if enable_loop_closure else "base",
+        "mode": mode,
         "num_poses": int(est.shape[0]),
         "accepted_transitions": int(accepted),
         "fallback_transitions": int(fallback_used),
         "loop_closures_added": int(loop_closures_added),
         "loop_closure_pairs": loop_pairs,
         "est_path": str(output_path),
+        "degeneracy_aware": bool(degeneracy_aware),
+        "degeneracy_inflated_odom_edges": int(degeneracy_inflated),
+        "degeneracy_mean_pnp_cond_accepted": float(cond_sum_accepted / max(cond_count_accepted, 1)),
     }
 
     if skip_metrics:
@@ -434,6 +510,10 @@ def main() -> None:
         loop_appearance_min_matches=args.loop_appearance_min_matches,
         loop_consistency_trans_m=args.loop_consistency_trans_m,
         loop_consistency_rot_deg=args.loop_consistency_rot_deg,
+        degeneracy_aware=args.degeneracy_aware,
+        degeneracy_cond_ref=args.degeneracy_cond_ref,
+        degeneracy_noise_max_mult=args.degeneracy_noise_max_mult,
+        degeneracy_fallback_mult=args.degeneracy_fallback_mult,
     )
 
 

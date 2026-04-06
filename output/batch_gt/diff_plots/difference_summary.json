@@ -1,0 +1,24 @@
+{
+  "dataset_root": "/gpfs/accounts/rob530w26s001_class_root/rob530w26s001_class/shared_data/dataset",
+  "estimates_dir": "output/batch_gt/estimates",
+  "single_estimate": "output/poses_est_00.txt",
+  "run_folder_layout": false,
+  "align": "se3",
+  "estimate_label": "Degeneracy-aware-loop",
+  "rows": [
+    {
+      "seq": "00",
+      "num_poses": 4541,
+      "align": "se3",
+      "scale": 1.0,
+      "estimate_label": "Degeneracy-aware-loop",
+      "estimate_path": "/home/alfredhx/iSAM2/output/poses_est_00.txt",
+      "trans_rmse_m": 41.16323698536442,
+      "trans_mean_m": 33.252618186620886,
+      "rot_rmse_deg": 15.634195695303418,
+      "rot_mean_deg": 11.773683899955007,
+      "plot_path": "/home/alfredhx/iSAM2/output/batch_gt/diff_plots/seq_00_comparison.png"
+    }
+  ],
+  "summary_plot": "/home/alfredhx/iSAM2/output/batch_gt/diff_plots/summary_trans_rot_rmse.png"
+}

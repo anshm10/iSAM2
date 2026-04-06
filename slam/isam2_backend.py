@@ -43,19 +43,18 @@ class Isam2PoseGraph:
         self.pending_graph = gtsam.NonlinearFactorGraph()
         self.pending_init = gtsam.Values()
 
-        self.odom_noise = gtsam.noiseModel.Diagonal.Sigmas(
-            np.array(
-                [
-                    rot_sigma_rad,
-                    rot_sigma_rad,
-                    rot_sigma_rad,
-                    trans_sigma_m,
-                    trans_sigma_m,
-                    trans_sigma_m,
-                ],
-                dtype=np.float64,
-            )
+        self._odom_sigma_vec = np.array(
+            [
+                rot_sigma_rad,
+                rot_sigma_rad,
+                rot_sigma_rad,
+                trans_sigma_m,
+                trans_sigma_m,
+                trans_sigma_m,
+            ],
+            dtype=np.float64,
         )
+        self.odom_noise = gtsam.noiseModel.Diagonal.Sigmas(self._odom_sigma_vec)
         self.loop_noise = gtsam.noiseModel.Diagonal.Sigmas(
             np.array(
                 [
@@ -91,12 +90,27 @@ class Isam2PoseGraph:
         self.pending_graph = gtsam.NonlinearFactorGraph()
         self.pending_init = gtsam.Values()
 
-    def add_odometry(self, prev_idx: int, curr_idx: int, t_prev_to_curr: np.ndarray) -> IsamUpdateStats:
+    def add_odometry(
+        self,
+        prev_idx: int,
+        curr_idx: int,
+        t_prev_to_curr: np.ndarray,
+        odom_noise_scale: float = 1.0,
+    ) -> IsamUpdateStats:
         if curr_idx != prev_idx + 1:
             raise ValueError("Only consecutive frame factors are supported in this baseline")
 
+        scale = float(odom_noise_scale)
+        if scale <= 0.0 or not np.isfinite(scale):
+            raise ValueError("odom_noise_scale must be positive and finite")
+
+        if scale == 1.0:
+            odom_noise = self.odom_noise
+        else:
+            odom_noise = gtsam.noiseModel.Diagonal.Sigmas(self._odom_sigma_vec * scale)
+
         measurement = _pose3_from_matrix(t_prev_to_curr)
-        self.pending_graph.add(gtsam.BetweenFactorPose3(X(prev_idx), X(curr_idx), measurement, self.odom_noise))
+        self.pending_graph.add(gtsam.BetweenFactorPose3(X(prev_idx), X(curr_idx), measurement, odom_noise))
 
         estimate = self.isam.calculateEstimate()
         if not estimate.exists(X(prev_idx)):
