@@ -88,6 +88,71 @@ def parse_args() -> argparse.Namespace:
         help="Maximum odometry sigma scale under low confidence.",
     )
     ap.add_argument(
+        "--enable-confidence-v2",
+        action="store_true",
+        help="Enable stronger confidence weighting for odometry and loop closure with robust kernels.",
+    )
+    ap.add_argument(
+        "--confidence-v2-floor",
+        type=float,
+        default=0.03,
+        help="Lower bound for v2 confidence values in (0,1].",
+    )
+    ap.add_argument(
+        "--confidence-v2-power",
+        type=float,
+        default=1.5,
+        help="Exponent on v2 confidence (higher means stronger down-weighting of weak constraints).",
+    )
+    ap.add_argument(
+        "--confidence-v2-odom-min-scale",
+        type=float,
+        default=0.7,
+        help="Minimum odometry sigma scale under very high v2 confidence.",
+    )
+    ap.add_argument(
+        "--confidence-v2-odom-max-scale",
+        type=float,
+        default=10.0,
+        help="Maximum odometry sigma scale under low v2 confidence.",
+    )
+    ap.add_argument(
+        "--confidence-v2-loop-min-scale",
+        type=float,
+        default=0.8,
+        help="Minimum loop-closure sigma scale under very high v2 confidence.",
+    )
+    ap.add_argument(
+        "--confidence-v2-loop-max-scale",
+        type=float,
+        default=14.0,
+        help="Maximum loop-closure sigma scale under low v2 confidence.",
+    )
+    ap.add_argument(
+        "--confidence-v2-loop-trans-tau-m",
+        type=float,
+        default=4.0,
+        help="Translation disagreement decay parameter (m) for loop confidence scoring.",
+    )
+    ap.add_argument(
+        "--confidence-v2-loop-rot-tau-deg",
+        type=float,
+        default=12.0,
+        help="Rotation disagreement decay parameter (deg) for loop confidence scoring.",
+    )
+    ap.add_argument(
+        "--confidence-v2-robust-kernel",
+        choices=["none", "huber", "cauchy"],
+        default="huber",
+        help="Robust kernel for confidence-v2 factors.",
+    )
+    ap.add_argument(
+        "--confidence-v2-robust-k",
+        type=float,
+        default=1.5,
+        help="Kernel width parameter for confidence-v2 robust loss.",
+    )
+    ap.add_argument(
         "--loop-min-separation",
         type=int,
         default=120,
@@ -182,6 +247,29 @@ def _descriptor_for_frame(
     return desc
 
 
+def _normalize_confidence(raw_confidence: float, floor: float, power: float = 1.0) -> float:
+    conf = float(np.clip(raw_confidence, floor, 1.0))
+    conf = float(np.clip(conf**power, floor, 1.0))
+    return conf
+
+
+def _loop_confidence_v2(
+    inliers: int,
+    total_matches: int,
+    trans_disagreement_m: float,
+    rot_disagreement_deg: float,
+    trans_tau_m: float,
+    rot_tau_deg: float,
+    floor: float,
+    power: float,
+) -> float:
+    match_ratio = float(inliers) / float(max(1, total_matches))
+    trans_term = float(np.exp(-max(0.0, trans_disagreement_m) / max(1e-6, trans_tau_m)))
+    rot_term = float(np.exp(-max(0.0, rot_disagreement_deg) / max(1e-6, rot_tau_deg)))
+    raw = match_ratio * trans_term * rot_term
+    return _normalize_confidence(raw, floor=floor, power=power)
+
+
 def _try_add_loop_closures(
     curr_idx: int,
     left_curr: np.ndarray,
@@ -200,6 +288,15 @@ def _try_add_loop_closures(
     loop_consistency_trans_m: float,
     loop_consistency_rot_deg: float,
     desc_cache: dict[int, np.ndarray | None],
+    enable_confidence_v2: bool = False,
+    confidence_v2_floor: float = 0.03,
+    confidence_v2_power: float = 1.5,
+    confidence_v2_loop_min_scale: float = 0.8,
+    confidence_v2_loop_max_scale: float = 14.0,
+    confidence_v2_loop_trans_tau_m: float = 4.0,
+    confidence_v2_loop_rot_tau_deg: float = 12.0,
+    confidence_v2_robust_kernel: str = "huber",
+    confidence_v2_robust_k: float = 1.5,
 ) -> List[dict]:
     if curr_idx < loop_min_separation:
         return []
@@ -286,7 +383,32 @@ def _try_add_loop_closures(
             continue
 
         try:
-            backend.add_loop_closure(j, curr_idx, loop_est.t_prev_to_curr)
+            loop_confidence = None
+            if enable_confidence_v2:
+                loop_confidence = _loop_confidence_v2(
+                    inliers=int(loop_est.inliers),
+                    total_matches=int(loop_est.total_matches),
+                    trans_disagreement_m=trans_disagreement,
+                    rot_disagreement_deg=rot_disagreement_deg,
+                    trans_tau_m=confidence_v2_loop_trans_tau_m,
+                    rot_tau_deg=confidence_v2_loop_rot_tau_deg,
+                    floor=confidence_v2_floor,
+                    power=confidence_v2_power,
+                )
+                robust_kernel = None if confidence_v2_robust_kernel == "none" else confidence_v2_robust_kernel
+                backend.add_loop_closure_confidence_weighted(
+                    j,
+                    curr_idx,
+                    loop_est.t_prev_to_curr,
+                    confidence=loop_confidence,
+                    min_scale=confidence_v2_loop_min_scale,
+                    max_scale=confidence_v2_loop_max_scale,
+                    aggressive=True,
+                    robust_kernel=robust_kernel,
+                    robust_k=confidence_v2_robust_k,
+                )
+            else:
+                backend.add_loop_closure(j, curr_idx, loop_est.t_prev_to_curr)
         except RuntimeError as exc:
             print(f"[WARN] loop insertion rejected at ({j},{curr_idx}): {exc}")
             continue
@@ -304,6 +426,7 @@ def _try_add_loop_closures(
                 "used_fallback_2d2d": used_fallback_2d2d,
                 "consistency_trans_disagreement_m": trans_disagreement,
                 "consistency_rot_disagreement_deg": rot_disagreement_deg,
+                "loop_confidence_v2": float(loop_confidence) if loop_confidence is not None else None,
             }
         )
 
@@ -328,6 +451,17 @@ def run_sequence(
     confidence_power: float = 1.0,
     confidence_min_scale: float = 0.85,
     confidence_max_scale: float = 4.0,
+    enable_confidence_v2: bool = False,
+    confidence_v2_floor: float = 0.03,
+    confidence_v2_power: float = 1.5,
+    confidence_v2_odom_min_scale: float = 0.7,
+    confidence_v2_odom_max_scale: float = 10.0,
+    confidence_v2_loop_min_scale: float = 0.8,
+    confidence_v2_loop_max_scale: float = 14.0,
+    confidence_v2_loop_trans_tau_m: float = 4.0,
+    confidence_v2_loop_rot_tau_deg: float = 12.0,
+    confidence_v2_robust_kernel: str = "huber",
+    confidence_v2_robust_k: float = 1.5,
     loop_min_separation: int = 120,
     loop_search_radius_m: float = 8.0,
     loop_max_candidates: int = 3,
@@ -342,6 +476,15 @@ def run_sequence(
         raise ValueError("confidence_floor must be in (0, 1]")
     if confidence_power <= 0.0:
         raise ValueError("confidence_power must be > 0")
+    if not (0.0 < confidence_v2_floor <= 1.0):
+        raise ValueError("confidence_v2_floor must be in (0, 1]")
+    if confidence_v2_power <= 0.0:
+        raise ValueError("confidence_v2_power must be > 0")
+    if confidence_v2_robust_k <= 0.0:
+        raise ValueError("confidence_v2_robust_k must be > 0")
+
+    if enable_confidence_v2 and enable_confidence_weighting:
+        print("[INFO] --enable-confidence-v2 is set; overriding --enable-confidence-weighting behavior.")
 
     loader = KITTISequenceLoader(dataset_root, seq)
     vo = StereoVisualOdometry(loader.calib, min_pnp_inliers=min_inliers)
@@ -378,13 +521,40 @@ def run_sequence(
             t_prev_curr = estimate.t_prev_to_curr
             accepted += 1
 
-        if enable_confidence_weighting:
+        if enable_confidence_v2:
+            if estimate is None:
+                confidence = confidence_v2_floor
+            else:
+                raw_confidence = float(estimate.inliers) / float(max(1, estimate.total_matches))
+                confidence = _normalize_confidence(
+                    raw_confidence,
+                    floor=confidence_v2_floor,
+                    power=confidence_v2_power,
+                )
+
+            robust_kernel = None if confidence_v2_robust_kernel == "none" else confidence_v2_robust_kernel
+            backend.add_odometry_confidence_weighted(
+                i - 1,
+                i,
+                t_prev_curr,
+                confidence=confidence,
+                min_scale=confidence_v2_odom_min_scale,
+                max_scale=confidence_v2_odom_max_scale,
+                aggressive=True,
+                robust_kernel=robust_kernel,
+                robust_k=confidence_v2_robust_k,
+            )
+            confidence_values.append(confidence)
+        elif enable_confidence_weighting:
             if estimate is None:
                 confidence = confidence_floor
             else:
                 raw_confidence = float(estimate.inliers) / float(max(1, estimate.total_matches))
-                confidence = float(np.clip(raw_confidence, confidence_floor, 1.0))
-                confidence = float(np.clip(confidence**confidence_power, confidence_floor, 1.0))
+                confidence = _normalize_confidence(
+                    raw_confidence,
+                    floor=confidence_floor,
+                    power=confidence_power,
+                )
 
             backend.add_odometry_confidence_weighted(
                 i - 1,
@@ -419,6 +589,15 @@ def run_sequence(
                 loop_consistency_trans_m=loop_consistency_trans_m,
                 loop_consistency_rot_deg=loop_consistency_rot_deg,
                 desc_cache=desc_cache,
+                enable_confidence_v2=enable_confidence_v2,
+                confidence_v2_floor=confidence_v2_floor,
+                confidence_v2_power=confidence_v2_power,
+                confidence_v2_loop_min_scale=confidence_v2_loop_min_scale,
+                confidence_v2_loop_max_scale=confidence_v2_loop_max_scale,
+                confidence_v2_loop_trans_tau_m=confidence_v2_loop_trans_tau_m,
+                confidence_v2_loop_rot_tau_deg=confidence_v2_loop_rot_tau_deg,
+                confidence_v2_robust_kernel=confidence_v2_robust_kernel,
+                confidence_v2_robust_k=confidence_v2_robust_k,
             )
             if accepted_loops:
                 loop_closures_added += len(accepted_loops)
@@ -432,7 +611,7 @@ def run_sequence(
 
         if i % 100 == 0:
             conf_text = ""
-            if enable_confidence_weighting and confidence_values:
+            if (enable_confidence_weighting or enable_confidence_v2) and confidence_values:
                 conf_text = f" conf_avg={float(np.mean(confidence_values)):.3f}"
             print(
                 f"seq={seq} processed {i}/{num_frames - 1} | "
@@ -448,6 +627,11 @@ def run_sequence(
     result = {
         "seq": f"{int(seq):02d}",
         "mode": (
+            "loop-closure+confidence-v2"
+            if enable_loop_closure and enable_confidence_v2
+            else "confidence-v2"
+            if enable_confidence_v2
+            else
             "loop-closure+confidence-weighted"
             if enable_loop_closure and enable_confidence_weighting
             else "loop-closure"
@@ -464,17 +648,32 @@ def run_sequence(
         "est_path": str(output_path),
     }
 
-    if enable_confidence_weighting and confidence_values:
+    if (enable_confidence_weighting or enable_confidence_v2) and confidence_values:
         conf_arr = np.asarray(confidence_values, dtype=np.float64)
         result["confidence_weighting"] = {
-            "enabled": True,
-            "floor": float(confidence_floor),
-            "power": float(confidence_power),
-            "min_scale": float(confidence_min_scale),
-            "max_scale": float(confidence_max_scale),
+            "enabled": bool(enable_confidence_weighting or enable_confidence_v2),
+            "version": "v2" if enable_confidence_v2 else "v1",
+            "floor": float(confidence_v2_floor if enable_confidence_v2 else confidence_floor),
+            "power": float(confidence_v2_power if enable_confidence_v2 else confidence_power),
+            "min_scale": float(
+                confidence_v2_odom_min_scale if enable_confidence_v2 else confidence_min_scale
+            ),
+            "max_scale": float(
+                confidence_v2_odom_max_scale if enable_confidence_v2 else confidence_max_scale
+            ),
+            "robust_kernel": confidence_v2_robust_kernel if enable_confidence_v2 else "none",
+            "robust_k": float(confidence_v2_robust_k if enable_confidence_v2 else 0.0),
             "mean_confidence": float(conf_arr.mean()),
             "min_confidence": float(conf_arr.min()),
             "max_confidence": float(conf_arr.max()),
+        }
+
+    if enable_confidence_v2:
+        result["confidence_v2"] = {
+            "loop_min_scale": float(confidence_v2_loop_min_scale),
+            "loop_max_scale": float(confidence_v2_loop_max_scale),
+            "loop_trans_tau_m": float(confidence_v2_loop_trans_tau_m),
+            "loop_rot_tau_deg": float(confidence_v2_loop_rot_tau_deg),
         }
 
     if skip_metrics:
@@ -512,6 +711,17 @@ def main() -> None:
         confidence_power=args.confidence_power,
         confidence_min_scale=args.confidence_min_scale,
         confidence_max_scale=args.confidence_max_scale,
+        enable_confidence_v2=args.enable_confidence_v2,
+        confidence_v2_floor=args.confidence_v2_floor,
+        confidence_v2_power=args.confidence_v2_power,
+        confidence_v2_odom_min_scale=args.confidence_v2_odom_min_scale,
+        confidence_v2_odom_max_scale=args.confidence_v2_odom_max_scale,
+        confidence_v2_loop_min_scale=args.confidence_v2_loop_min_scale,
+        confidence_v2_loop_max_scale=args.confidence_v2_loop_max_scale,
+        confidence_v2_loop_trans_tau_m=args.confidence_v2_loop_trans_tau_m,
+        confidence_v2_loop_rot_tau_deg=args.confidence_v2_loop_rot_tau_deg,
+        confidence_v2_robust_kernel=args.confidence_v2_robust_kernel,
+        confidence_v2_robust_k=args.confidence_v2_robust_k,
         loop_min_separation=args.loop_min_separation,
         loop_search_radius_m=args.loop_search_radius_m,
         loop_max_candidates=args.loop_max_candidates,
