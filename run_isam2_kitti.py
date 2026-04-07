@@ -59,6 +59,35 @@ def parse_args() -> argparse.Namespace:
         help="Enable geometric loop-closure candidate search and add loop factors.",
     )
     ap.add_argument(
+        "--enable-confidence-weighting",
+        action="store_true",
+        help="Scale odometry factor noise using per-frame VO confidence.",
+    )
+    ap.add_argument(
+        "--confidence-floor",
+        type=float,
+        default=0.08,
+        help="Lower bound for confidence used in noise scaling (0,1].",
+    )
+    ap.add_argument(
+        "--confidence-power",
+        type=float,
+        default=1.0,
+        help="Exponent applied to raw confidence before scaling (>=1 makes weighting more conservative).",
+    )
+    ap.add_argument(
+        "--confidence-min-scale",
+        type=float,
+        default=0.85,
+        help="Minimum odometry sigma scale under high confidence.",
+    )
+    ap.add_argument(
+        "--confidence-max-scale",
+        type=float,
+        default=4.0,
+        help="Maximum odometry sigma scale under low confidence.",
+    )
+    ap.add_argument(
         "--loop-min-separation",
         type=int,
         default=120,
@@ -294,6 +323,11 @@ def run_sequence(
     fallback_no_motion: bool,
     skip_metrics: bool,
     enable_loop_closure: bool = False,
+    enable_confidence_weighting: bool = False,
+    confidence_floor: float = 0.08,
+    confidence_power: float = 1.0,
+    confidence_min_scale: float = 0.85,
+    confidence_max_scale: float = 4.0,
     loop_min_separation: int = 120,
     loop_search_radius_m: float = 8.0,
     loop_max_candidates: int = 3,
@@ -304,6 +338,11 @@ def run_sequence(
     loop_consistency_trans_m: float = 10.0,
     loop_consistency_rot_deg: float = 35.0,
 ) -> dict:
+    if not (0.0 < confidence_floor <= 1.0):
+        raise ValueError("confidence_floor must be in (0, 1]")
+    if confidence_power <= 0.0:
+        raise ValueError("confidence_power must be > 0")
+
     loader = KITTISequenceLoader(dataset_root, seq)
     vo = StereoVisualOdometry(loader.calib, min_pnp_inliers=min_inliers)
     backend = Isam2PoseGraph()
@@ -321,6 +360,7 @@ def run_sequence(
     added_pairs: Set[Tuple[int, int]] = set()
     est_positions: List[np.ndarray] = [backend.pose_matrix(0)[:3, 3].copy()]
     desc_cache: dict[int, np.ndarray | None] = {}
+    confidence_values: List[float] = []
 
     for i in range(1, num_frames):
         left_curr, right_curr, _ = loader.read_stereo(i)
@@ -338,7 +378,25 @@ def run_sequence(
             t_prev_curr = estimate.t_prev_to_curr
             accepted += 1
 
-        backend.add_odometry(i - 1, i, t_prev_curr)
+        if enable_confidence_weighting:
+            if estimate is None:
+                confidence = confidence_floor
+            else:
+                raw_confidence = float(estimate.inliers) / float(max(1, estimate.total_matches))
+                confidence = float(np.clip(raw_confidence, confidence_floor, 1.0))
+                confidence = float(np.clip(confidence**confidence_power, confidence_floor, 1.0))
+
+            backend.add_odometry_confidence_weighted(
+                i - 1,
+                i,
+                t_prev_curr,
+                confidence=confidence,
+                min_scale=confidence_min_scale,
+                max_scale=confidence_max_scale,
+            )
+            confidence_values.append(confidence)
+        else:
+            backend.add_odometry(i - 1, i, t_prev_curr)
 
         est_positions.append(backend.pose_matrix(i)[:3, 3].copy())
 
@@ -373,9 +431,12 @@ def run_sequence(
         right_prev = right_curr
 
         if i % 100 == 0:
+            conf_text = ""
+            if enable_confidence_weighting and confidence_values:
+                conf_text = f" conf_avg={float(np.mean(confidence_values)):.3f}"
             print(
                 f"seq={seq} processed {i}/{num_frames - 1} | "
-                f"accepted={accepted} fallback={fallback_used} loops={loop_closures_added}"
+                f"accepted={accepted} fallback={fallback_used} loops={loop_closures_added}{conf_text}"
             )
 
     est = backend.trajectory_matrices()
@@ -386,7 +447,15 @@ def run_sequence(
 
     result = {
         "seq": f"{int(seq):02d}",
-        "mode": "loop-closure" if enable_loop_closure else "base",
+        "mode": (
+            "loop-closure+confidence-weighted"
+            if enable_loop_closure and enable_confidence_weighting
+            else "loop-closure"
+            if enable_loop_closure
+            else "confidence-weighted"
+            if enable_confidence_weighting
+            else "base"
+        ),
         "num_poses": int(est.shape[0]),
         "accepted_transitions": int(accepted),
         "fallback_transitions": int(fallback_used),
@@ -394,6 +463,19 @@ def run_sequence(
         "loop_closure_pairs": loop_pairs,
         "est_path": str(output_path),
     }
+
+    if enable_confidence_weighting and confidence_values:
+        conf_arr = np.asarray(confidence_values, dtype=np.float64)
+        result["confidence_weighting"] = {
+            "enabled": True,
+            "floor": float(confidence_floor),
+            "power": float(confidence_power),
+            "min_scale": float(confidence_min_scale),
+            "max_scale": float(confidence_max_scale),
+            "mean_confidence": float(conf_arr.mean()),
+            "min_confidence": float(conf_arr.min()),
+            "max_confidence": float(conf_arr.max()),
+        }
 
     if skip_metrics:
         return result
@@ -425,6 +507,11 @@ def main() -> None:
         fallback_no_motion=args.fallback_no_motion,
         skip_metrics=args.skip_metrics,
         enable_loop_closure=args.enable_loop_closure,
+        enable_confidence_weighting=args.enable_confidence_weighting,
+        confidence_floor=args.confidence_floor,
+        confidence_power=args.confidence_power,
+        confidence_min_scale=args.confidence_min_scale,
+        confidence_max_scale=args.confidence_max_scale,
         loop_min_separation=args.loop_min_separation,
         loop_search_radius_m=args.loop_search_radius_m,
         loop_max_candidates=args.loop_max_candidates,

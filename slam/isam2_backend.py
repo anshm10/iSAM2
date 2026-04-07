@@ -43,45 +43,43 @@ class Isam2PoseGraph:
         self.pending_graph = gtsam.NonlinearFactorGraph()
         self.pending_init = gtsam.Values()
 
-        self.odom_noise = gtsam.noiseModel.Diagonal.Sigmas(
-            np.array(
-                [
-                    rot_sigma_rad,
-                    rot_sigma_rad,
-                    rot_sigma_rad,
-                    trans_sigma_m,
-                    trans_sigma_m,
-                    trans_sigma_m,
-                ],
-                dtype=np.float64,
-            )
+        self.odom_sigmas = np.array(
+            [
+                rot_sigma_rad,
+                rot_sigma_rad,
+                rot_sigma_rad,
+                trans_sigma_m,
+                trans_sigma_m,
+                trans_sigma_m,
+            ],
+            dtype=np.float64,
         )
-        self.loop_noise = gtsam.noiseModel.Diagonal.Sigmas(
-            np.array(
-                [
-                    loop_rot_sigma_rad,
-                    loop_rot_sigma_rad,
-                    loop_rot_sigma_rad,
-                    loop_trans_sigma_m,
-                    loop_trans_sigma_m,
-                    loop_trans_sigma_m,
-                ],
-                dtype=np.float64,
-            )
+        self.loop_sigmas = np.array(
+            [
+                loop_rot_sigma_rad,
+                loop_rot_sigma_rad,
+                loop_rot_sigma_rad,
+                loop_trans_sigma_m,
+                loop_trans_sigma_m,
+                loop_trans_sigma_m,
+            ],
+            dtype=np.float64,
         )
-        self.prior_noise = gtsam.noiseModel.Diagonal.Sigmas(
-            np.array(
-                [
-                    prior_rot_sigma_rad,
-                    prior_rot_sigma_rad,
-                    prior_rot_sigma_rad,
-                    prior_trans_sigma_m,
-                    prior_trans_sigma_m,
-                    prior_trans_sigma_m,
-                ],
-                dtype=np.float64,
-            )
+        self.prior_sigmas = np.array(
+            [
+                prior_rot_sigma_rad,
+                prior_rot_sigma_rad,
+                prior_rot_sigma_rad,
+                prior_trans_sigma_m,
+                prior_trans_sigma_m,
+                prior_trans_sigma_m,
+            ],
+            dtype=np.float64,
         )
+
+        self.odom_noise = gtsam.noiseModel.Diagonal.Sigmas(self.odom_sigmas)
+        self.loop_noise = gtsam.noiseModel.Diagonal.Sigmas(self.loop_sigmas)
+        self.prior_noise = gtsam.noiseModel.Diagonal.Sigmas(self.prior_sigmas)
 
         self.latest_idx = 0
         identity = np.eye(4, dtype=np.float64)
@@ -91,12 +89,15 @@ class Isam2PoseGraph:
         self.pending_graph = gtsam.NonlinearFactorGraph()
         self.pending_init = gtsam.Values()
 
-    def add_odometry(self, prev_idx: int, curr_idx: int, t_prev_to_curr: np.ndarray) -> IsamUpdateStats:
-        if curr_idx != prev_idx + 1:
-            raise ValueError("Only consecutive frame factors are supported in this baseline")
-
+    def _add_odometry_with_noise(
+        self,
+        prev_idx: int,
+        curr_idx: int,
+        t_prev_to_curr: np.ndarray,
+        noise,
+    ) -> IsamUpdateStats:
         measurement = _pose3_from_matrix(t_prev_to_curr)
-        self.pending_graph.add(gtsam.BetweenFactorPose3(X(prev_idx), X(curr_idx), measurement, self.odom_noise))
+        self.pending_graph.add(gtsam.BetweenFactorPose3(X(prev_idx), X(curr_idx), measurement, noise))
 
         estimate = self.isam.calculateEstimate()
         if not estimate.exists(X(prev_idx)):
@@ -112,6 +113,40 @@ class Isam2PoseGraph:
         self.latest_idx = curr_idx
 
         return IsamUpdateStats(frame_idx=curr_idx, used_fallback_motion=False)
+
+    def _confidence_scaled_odom_noise(
+        self,
+        confidence: float,
+        min_scale: float,
+        max_scale: float,
+    ):
+        conf = float(np.clip(confidence, 1e-3, 1.0))
+        scale = float(np.clip(1.0 / np.sqrt(conf), min_scale, max_scale))
+        return gtsam.noiseModel.Diagonal.Sigmas(self.odom_sigmas * scale)
+
+    def add_odometry(self, prev_idx: int, curr_idx: int, t_prev_to_curr: np.ndarray) -> IsamUpdateStats:
+        if curr_idx != prev_idx + 1:
+            raise ValueError("Only consecutive frame factors are supported in this baseline")
+        return self._add_odometry_with_noise(prev_idx, curr_idx, t_prev_to_curr, self.odom_noise)
+
+    def add_odometry_confidence_weighted(
+        self,
+        prev_idx: int,
+        curr_idx: int,
+        t_prev_to_curr: np.ndarray,
+        confidence: float,
+        min_scale: float = 0.85,
+        max_scale: float = 4.0,
+    ) -> IsamUpdateStats:
+        if curr_idx != prev_idx + 1:
+            raise ValueError("Only consecutive frame factors are supported in this baseline")
+        if min_scale <= 0.0:
+            raise ValueError("min_scale must be > 0")
+        if max_scale < min_scale:
+            raise ValueError("max_scale must be >= min_scale")
+
+        noise = self._confidence_scaled_odom_noise(confidence, min_scale, max_scale)
+        return self._add_odometry_with_noise(prev_idx, curr_idx, t_prev_to_curr, noise)
 
     def add_loop_closure(self, src_idx: int, dst_idx: int, t_src_to_dst: np.ndarray) -> None:
         if src_idx == dst_idx:
