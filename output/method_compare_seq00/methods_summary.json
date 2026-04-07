@@ -1,0 +1,34 @@
+{
+  "rows": [
+    {
+      "method": "Base",
+      "trans_rmse_m": 32.75189637290373,
+      "rot_rmse_deg": 10.494509848480721
+    },
+    {
+      "method": "Loop closure",
+      "trans_rmse_m": 29.919338490615225,
+      "rot_rmse_deg": 12.866760323812844
+    },
+    {
+      "method": "Confidence (v1)",
+      "trans_rmse_m": 32.75189637290373,
+      "rot_rmse_deg": 10.494509848480721
+    },
+    {
+      "method": "Loop + Confidence (v1)",
+      "trans_rmse_m": 29.92514292190365,
+      "rot_rmse_deg": 12.916999061717084
+    },
+    {
+      "method": "Confidence v2",
+      "trans_rmse_m": 32.75189637290373,
+      "rot_rmse_deg": 10.494509848480721
+    },
+    {
+      "method": "Loop + Confidence v2",
+      "trans_rmse_m": 22.371208611235264,
+      "rot_rmse_deg": 9.155290104550556
+    }
+  ]
+}
