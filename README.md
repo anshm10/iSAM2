@@ -182,34 +182,6 @@ python3 run_all_gt_sequences.py \
 	--output-dir output/experiments/degeneracy_loop/batch_gt
 ```
 
-## Fallback Branch Runs (If Main Outputs Do Not Reproduce)
-
-If the unified `main` branch does not reproduce expected outputs, run the original method groups on their source branches separately:
-
-- `loop_vs_loopconf`: methods M1-M6
-- `degeneracy2.0`: methods M7-M8
-- `mohammad/information-based-weighting`: method M9
-
-Suggested workflow:
-
-```bash
-git fetch origin
-
-# M1-M6
-git checkout loop_vs_loopconf
-
-# M7-M8
-git checkout degeneracy2.0
-
-# M9
-git checkout mohammad/information-based-weighting
-
-# return to unified implementation
-git checkout main
-```
-
-Run each branch's method scripts/configs independently so the nine implementations are executed in their original branch context.
-
 ## Flag Compatibility Notes
 
 - `--enable-confidence-v2` overrides `--enable-confidence-weighting` behavior.
@@ -240,3 +212,31 @@ The consolidation copy manifest is saved at:
 - Metric utilities: `eval/compute_kitti_metrics.py`, `eval/loop_closure_gain.py`
 
 Use `--help` on each script for full options.
+
+## Fallback Branch Runs (If Main Outputs Do Not Reproduce)
+
+If the unified `main` branch does not reproduce expected outputs, run the original method groups on their source branches separately:
+
+- `loop_vs_loopconf`: methods M1-M6
+- `degeneracy2.0`: methods M7-M8
+- `mohammad/information-based-weighting`: method M9
+
+Suggested workflow:
+
+```bash
+git fetch origin
+
+# M1-M6
+git checkout loop_vs_loopconf
+
+# M7-M8
+git checkout degeneracy2.0
+
+# M9
+git checkout mohammad/information-based-weighting
+
+# return to unified implementation
+git checkout main
+```
+
+Run each branch's method scripts/configs independently so the nine implementations are executed in their original branch context.
