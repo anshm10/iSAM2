@@ -187,7 +187,7 @@ python3 run_all_gt_sequences.py \
 - `--enable-confidence-v2` overrides `--enable-confidence-weighting` behavior.
 - `--enable-info-weighting` cannot be combined with confidence-v1 or confidence-v2.
 - `--degeneracy-aware` currently:
-	- requires `--enable-loop-closure`
+	- can be used with or without loop closure
 	- cannot be combined with confidence-v1, confidence-v2, or info-weighting
 
 ## Output Layout

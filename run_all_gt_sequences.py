@@ -159,7 +159,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--degeneracy-aware",
         action="store_true",
-        help="Enable Alfred-style degeneracy-aware odometry scaling (loop mode only).",
+        help="Enable observability-aware degeneracy odometry scaling.",
     )
     ap.add_argument(
         "--degeneracy-cond-ref",

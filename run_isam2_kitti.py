@@ -225,7 +225,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--degeneracy-aware",
         action="store_true",
-        help="Inflate odometry noise on ill-conditioned stereo PnP (enabled for loop mode only).",
+        help="Inflate odometry noise on ill-conditioned stereo PnP.",
     )
     ap.add_argument(
         "--degeneracy-cond-ref",
@@ -560,8 +560,6 @@ def run_sequence(
         raise ValueError("--enable-info-weighting cannot be combined with confidence-v1/v2 modes")
     if degeneracy_aware and (enable_confidence_weighting or enable_confidence_v2 or enable_info_weighting):
         raise ValueError("--degeneracy-aware currently cannot be combined with confidence or info-weighting")
-    if degeneracy_aware and not enable_loop_closure:
-        raise ValueError("--degeneracy-aware is supported only with --enable-loop-closure")
 
     loader = KITTISequenceLoader(dataset_root, seq)
     vo = StereoVisualOdometry(loader.calib, min_pnp_inliers=min_inliers)
