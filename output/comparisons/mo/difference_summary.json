@@ -1,0 +1,37 @@
+{
+  "sequence": "00",
+  "num_poses": 4541,
+  "evaluation": "SE(3)-aligned ATE and RPE",
+  "methods": {
+    "baseline_no_loops": {
+      "description": "iSAM2 with fixed odometry covariance, no loop closure",
+      "ate_trans_rmse_m": 32.751896365772446,
+      "ate_rot_rmse_deg": 10.49450984014911,
+      "rpe_trans_d1_rmse_m": 0.03324314500518954,
+      "rpe_rot_d1_rmse_deg": 0.11921001621955003,
+      "rpe_trans_d10_rmse_m": 0.21080936245831827,
+      "rpe_rot_d10_rmse_deg": 0.6725117158937729,
+      "loop_closures": 0
+    },
+    "baseline_with_loops": {
+      "description": "iSAM2 with fixed odometry covariance + spatial loop closure",
+      "ate_trans_rmse_m": 29.919338501598034,
+      "ate_rot_rmse_deg": 12.866760340645028,
+      "rpe_trans_d1_rmse_m": 0.035401101766430236,
+      "rpe_rot_d1_rmse_deg": 0.20077198906363017,
+      "rpe_trans_d10_rmse_m": 0.2591253712935301,
+      "rpe_rot_d10_rmse_deg": 1.5399522195595314,
+      "loop_closures": 246
+    },
+    "infoweighted_with_loops": {
+      "description": "iSAM2 with per-frame confidence-scaled odometry covariance + spatial loop closure",
+      "ate_trans_rmse_m": 30.156565327903916,
+      "ate_rot_rmse_deg": 12.957248351270334,
+      "rpe_trans_d1_rmse_m": 0.03559262665744535,
+      "rpe_rot_d1_rmse_deg": 0.20195199899724797,
+      "rpe_trans_d10_rmse_m": 0.2621031521939598,
+      "rpe_rot_d10_rmse_deg": 1.5488071772662508,
+      "loop_closures": 246
+    }
+  }
+}

@@ -9,11 +9,77 @@ import numpy as np
 from .kitti_loader import StereoCalibration
 
 
+def _reproj_residuals(
+    object_points_n3: np.ndarray,
+    image_points_n2: np.ndarray,
+    rvec: np.ndarray,
+    tvec: np.ndarray,
+    camera_matrix: np.ndarray,
+) -> np.ndarray:
+    obj = np.asarray(object_points_n3, dtype=np.float64).reshape(-1, 1, 3)
+    proj, _ = cv2.projectPoints(obj, rvec, tvec, camera_matrix, None)
+    pred = proj.reshape(-1, 2)
+    return (pred - np.asarray(image_points_n2, dtype=np.float64).reshape(-1, 2)).ravel()
+
+
+def stereo_pnp_observability_condition(
+    object_points: np.ndarray,
+    image_points: np.ndarray,
+    rvec: np.ndarray,
+    tvec: np.ndarray,
+    camera_matrix: np.ndarray,
+    eps: float = 1e-5,
+) -> float:
+    """Approximate pose observability from Gauss-Newton information (J^T J)."""
+    rvec = np.asarray(rvec, dtype=np.float64).reshape(3).copy()
+    tvec = np.asarray(tvec, dtype=np.float64).reshape(3).copy()
+    object_points = np.asarray(object_points, dtype=np.float64)
+    image_points = np.asarray(image_points, dtype=np.float64)
+    n = int(object_points.shape[0])
+    if n < 6:
+        return float("inf")
+
+    r_mat, _ = cv2.Rodrigues(rvec)
+
+    def rotated_rvec(delta_r: np.ndarray) -> np.ndarray:
+        d_r, _ = cv2.Rodrigues(delta_r)
+        r_new, _ = cv2.Rodrigues(r_mat @ d_r)
+        return r_new.reshape(3)
+
+    f0 = _reproj_residuals(object_points, image_points, rvec, tvec, camera_matrix)
+    jac = np.zeros((f0.size, 6), dtype=np.float64)
+    for j in range(3):
+        dr = np.zeros(3, dtype=np.float64)
+        dr[j] = eps
+        r1 = rotated_rvec(dr)
+        f1 = _reproj_residuals(object_points, image_points, r1, tvec, camera_matrix)
+        jac[:, j] = (f1 - f0) / eps
+    for j in range(3):
+        dt = np.zeros(3, dtype=np.float64)
+        dt[j] = eps
+        f1 = _reproj_residuals(object_points, image_points, rvec, tvec + dt, camera_matrix)
+        jac[:, 3 + j] = (f1 - f0) / eps
+
+    h = jac.T @ jac
+    h = 0.5 * (h + h.T)
+    eig = np.linalg.eigvalsh(h)
+    pos = eig[eig > 1e-18]
+    if pos.size == 0:
+        return float("inf")
+    lam_max = float(pos.max())
+    lam_min = float(pos.min())
+    if lam_min <= 0.0:
+        return float("inf")
+    return lam_max / lam_min
+
+
 @dataclass(frozen=True)
 class MotionEstimate:
     t_prev_to_curr: np.ndarray
     inliers: int
     total_matches: int
+    pnp_condition_number: float = float("nan")
+    mean_reproj_error: float = 0.0
 
 
 class StereoVisualOdometry:
@@ -55,6 +121,8 @@ class StereoVisualOdometry:
         left_prev: np.ndarray,
         right_prev: np.ndarray,
         left_curr: np.ndarray,
+        compute_observability: bool = False,
+        compute_reproj_error: bool = True,
     ) -> MotionEstimate | None:
         kp_l_prev, desc_l_prev = self._detect(left_prev)
         kp_r_prev, desc_r_prev = self._detect(right_prev)
@@ -136,6 +204,39 @@ class StereoVisualOdometry:
         if not success or inliers is None or len(inliers) < self.min_pnp_inliers:
             return None
 
+        cond = float("nan")
+        if compute_observability:
+            idx = inliers.reshape(-1)
+            obj_in = np.asarray(object_points_arr[idx], dtype=np.float64)
+            img_in = np.asarray(image_points_arr[idx], dtype=np.float64)
+            r_ref = np.asarray(rvec, dtype=np.float64).reshape(3, 1).copy()
+            t_ref = np.asarray(tvec, dtype=np.float64).reshape(3, 1).copy()
+            cv2.solvePnPRefineLM(
+                obj_in.astype(np.float32),
+                img_in.astype(np.float32),
+                self.calib.k_left,
+                None,
+                r_ref,
+                t_ref,
+            )
+            rvec = r_ref
+            tvec = t_ref
+            cond = stereo_pnp_observability_condition(
+                obj_in,
+                img_in,
+                rvec.reshape(3),
+                tvec.reshape(3),
+                self.calib.k_left,
+            )
+
+        reproj_err = 0.0
+        if compute_reproj_error:
+            idx = inliers.flatten()
+            inlier_obj = object_points_arr[idx]
+            inlier_img = image_points_arr[idx]
+            projected, _ = cv2.projectPoints(inlier_obj, rvec, tvec, self.calib.k_left, None)
+            reproj_err = float(np.linalg.norm(inlier_img - projected.reshape(-1, 2), axis=1).mean())
+
         rmat, _ = cv2.Rodrigues(rvec)
 
         # PnP returns transform that maps points from prev camera frame into current frame.
@@ -151,6 +252,8 @@ class StereoVisualOdometry:
             t_prev_to_curr=t_prev_curr,
             inliers=int(len(inliers)),
             total_matches=int(len(temporal_matches)),
+            pnp_condition_number=cond,
+            mean_reproj_error=reproj_err,
         )
 
     def estimate_prev_to_curr_2d2d(

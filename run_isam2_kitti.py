@@ -9,7 +9,7 @@ from typing import List, Set, Tuple
 
 import numpy as np
 
-from slam.isam2_backend import Isam2PoseGraph
+from slam.isam2_backend import Isam2PoseGraph, compute_confidence
 from slam.kitti_loader import KITTISequenceLoader
 from slam.stereo_vo import StereoVisualOdometry
 
@@ -62,6 +62,23 @@ def parse_args() -> argparse.Namespace:
         "--enable-confidence-weighting",
         action="store_true",
         help="Scale odometry factor noise using per-frame VO confidence.",
+    )
+    ap.add_argument(
+        "--enable-info-weighting",
+        action="store_true",
+        help="Enable Mo-style information weighting from inliers, matches, and reprojection error.",
+    )
+    ap.add_argument(
+        "--info-min-confidence",
+        type=float,
+        default=0.1,
+        help="Minimum confidence clamp for info-weighted odometry factors.",
+    )
+    ap.add_argument(
+        "--info-max-confidence",
+        type=float,
+        default=1.0,
+        help="Maximum confidence clamp for info-weighted odometry factors.",
     )
     ap.add_argument(
         "--confidence-floor",
@@ -205,6 +222,29 @@ def parse_args() -> argparse.Namespace:
         default=35.0,
         help="Max rotation disagreement (deg) between candidate loop measurement and current graph estimate.",
     )
+    ap.add_argument(
+        "--degeneracy-aware",
+        action="store_true",
+        help="Inflate odometry noise on ill-conditioned stereo PnP (enabled for loop mode only).",
+    )
+    ap.add_argument(
+        "--degeneracy-cond-ref",
+        type=float,
+        default=800.0,
+        help="Reference condition number kappa: noise scale grows like sqrt(max(1, kappa/kappa_ref)).",
+    )
+    ap.add_argument(
+        "--degeneracy-noise-max-mult",
+        type=float,
+        default=25.0,
+        help="Maximum odometry sigma multiplier when degeneracy-aware mode is active.",
+    )
+    ap.add_argument(
+        "--degeneracy-fallback-mult",
+        type=float,
+        default=None,
+        help="Fallback odometry sigma multiplier on VO failure (defaults to degeneracy-noise-max-mult).",
+    )
     return ap.parse_args()
 
 
@@ -251,6 +291,18 @@ def _normalize_confidence(raw_confidence: float, floor: float, power: float = 1.
     conf = float(np.clip(raw_confidence, floor, 1.0))
     conf = float(np.clip(conf**power, floor, 1.0))
     return conf
+
+
+def _odom_noise_scale_from_pnp_condition(
+    cond: float,
+    cond_ref: float,
+    max_mult: float,
+) -> float:
+    if not np.isfinite(cond) or cond <= 0.0:
+        return float(max_mult)
+    ref = max(float(cond_ref), 1e-9)
+    ratio = float(np.sqrt(max(1.0, float(cond) / ref)))
+    return float(min(float(max_mult), ratio))
 
 
 def _loop_confidence_v2(
@@ -447,6 +499,9 @@ def run_sequence(
     skip_metrics: bool,
     enable_loop_closure: bool = False,
     enable_confidence_weighting: bool = False,
+    enable_info_weighting: bool = False,
+    info_min_confidence: float = 0.1,
+    info_max_confidence: float = 1.0,
     confidence_floor: float = 0.08,
     confidence_power: float = 1.0,
     confidence_min_scale: float = 0.85,
@@ -471,6 +526,10 @@ def run_sequence(
     loop_appearance_min_matches: int = 80,
     loop_consistency_trans_m: float = 10.0,
     loop_consistency_rot_deg: float = 35.0,
+    degeneracy_aware: bool = False,
+    degeneracy_cond_ref: float = 800.0,
+    degeneracy_noise_max_mult: float = 25.0,
+    degeneracy_fallback_mult: float | None = None,
 ) -> dict:
     if not (0.0 < confidence_floor <= 1.0):
         raise ValueError("confidence_floor must be in (0, 1]")
@@ -482,9 +541,27 @@ def run_sequence(
         raise ValueError("confidence_v2_power must be > 0")
     if confidence_v2_robust_k <= 0.0:
         raise ValueError("confidence_v2_robust_k must be > 0")
+    if not (0.0 < info_min_confidence <= 1.0):
+        raise ValueError("info_min_confidence must be in (0, 1]")
+    if not (0.0 < info_max_confidence <= 1.0):
+        raise ValueError("info_max_confidence must be in (0, 1]")
+    if info_max_confidence < info_min_confidence:
+        raise ValueError("info_max_confidence must be >= info_min_confidence")
+    if degeneracy_cond_ref <= 0.0:
+        raise ValueError("degeneracy_cond_ref must be > 0")
+    if degeneracy_noise_max_mult <= 0.0:
+        raise ValueError("degeneracy_noise_max_mult must be > 0")
+    if degeneracy_fallback_mult is not None and degeneracy_fallback_mult <= 0.0:
+        raise ValueError("degeneracy_fallback_mult must be > 0")
 
     if enable_confidence_v2 and enable_confidence_weighting:
         print("[INFO] --enable-confidence-v2 is set; overriding --enable-confidence-weighting behavior.")
+    if enable_info_weighting and (enable_confidence_weighting or enable_confidence_v2):
+        raise ValueError("--enable-info-weighting cannot be combined with confidence-v1/v2 modes")
+    if degeneracy_aware and (enable_confidence_weighting or enable_confidence_v2 or enable_info_weighting):
+        raise ValueError("--degeneracy-aware currently cannot be combined with confidence or info-weighting")
+    if degeneracy_aware and not enable_loop_closure:
+        raise ValueError("--degeneracy-aware is supported only with --enable-loop-closure")
 
     loader = KITTISequenceLoader(dataset_root, seq)
     vo = StereoVisualOdometry(loader.calib, min_pnp_inliers=min_inliers)
@@ -504,11 +581,26 @@ def run_sequence(
     est_positions: List[np.ndarray] = [backend.pose_matrix(0)[:3, 3].copy()]
     desc_cache: dict[int, np.ndarray | None] = {}
     confidence_values: List[float] = []
+    info_confidence_values: List[float] = []
+    degeneracy_inflated = 0
+    cond_sum_accepted = 0.0
+    cond_count_accepted = 0
+
+    fb_mult = degeneracy_fallback_mult
+    if fb_mult is None:
+        fb_mult = degeneracy_noise_max_mult
 
     for i in range(1, num_frames):
         left_curr, right_curr, _ = loader.read_stereo(i)
 
-        estimate = vo.estimate_prev_to_curr(left_prev, right_prev, left_curr)
+        estimate = vo.estimate_prev_to_curr(
+            left_prev,
+            right_prev,
+            left_curr,
+            compute_observability=degeneracy_aware,
+            compute_reproj_error=enable_info_weighting,
+        )
+        odom_scale = 1.0
         if estimate is None:
             if not fallback_no_motion:
                 raise RuntimeError(
@@ -517,9 +609,22 @@ def run_sequence(
             print(f"[WARN] seq={seq} frame={i}: VO failed, using identity fallback")
             t_prev_curr = np.eye(4, dtype=np.float64)
             fallback_used += 1
+            if degeneracy_aware:
+                odom_scale = float(fb_mult)
         else:
             t_prev_curr = estimate.t_prev_to_curr
             accepted += 1
+            if degeneracy_aware:
+                cond = float(estimate.pnp_condition_number)
+                cond_sum_accepted += cond
+                cond_count_accepted += 1
+                odom_scale = _odom_noise_scale_from_pnp_condition(
+                    cond,
+                    degeneracy_cond_ref,
+                    degeneracy_noise_max_mult,
+                )
+                if odom_scale > 1.0 + 1e-6:
+                    degeneracy_inflated += 1
 
         if enable_confidence_v2:
             if estimate is None:
@@ -565,6 +670,21 @@ def run_sequence(
                 max_scale=confidence_max_scale,
             )
             confidence_values.append(confidence)
+        elif enable_info_weighting:
+            if estimate is None:
+                confidence = info_min_confidence
+            else:
+                confidence = compute_confidence(
+                    estimate.inliers,
+                    estimate.total_matches,
+                    estimate.mean_reproj_error,
+                    min_confidence=info_min_confidence,
+                    max_confidence=info_max_confidence,
+                )
+            backend.add_odometry_weighted(i - 1, i, t_prev_curr, confidence)
+            info_confidence_values.append(confidence)
+        elif degeneracy_aware:
+            backend.add_odometry(i - 1, i, t_prev_curr, odom_noise_scale=odom_scale)
         else:
             backend.add_odometry(i - 1, i, t_prev_curr)
 
@@ -613,6 +733,8 @@ def run_sequence(
             conf_text = ""
             if (enable_confidence_weighting or enable_confidence_v2) and confidence_values:
                 conf_text = f" conf_avg={float(np.mean(confidence_values)):.3f}"
+            elif enable_info_weighting and info_confidence_values:
+                conf_text = f" info_conf_avg={float(np.mean(info_confidence_values)):.3f}"
             print(
                 f"seq={seq} processed {i}/{num_frames - 1} | "
                 f"accepted={accepted} fallback={fallback_used} loops={loop_closures_added}{conf_text}"
@@ -624,22 +746,21 @@ def run_sequence(
     write_kitti_poses(output_path, est)
     print(f"Wrote estimated trajectory: {output_path} ({est.shape[0]} poses)")
 
+    mode_parts: List[str] = []
+    if enable_loop_closure:
+        mode_parts.append("loop-closure")
+    if enable_confidence_v2:
+        mode_parts.append("confidence-v2")
+    elif enable_confidence_weighting:
+        mode_parts.append("confidence-weighted")
+    elif enable_info_weighting:
+        mode_parts.append("info-weighted")
+    elif degeneracy_aware:
+        mode_parts.append("degeneracy-aware")
+
     result = {
         "seq": f"{int(seq):02d}",
-        "mode": (
-            "loop-closure+confidence-v2"
-            if enable_loop_closure and enable_confidence_v2
-            else "confidence-v2"
-            if enable_confidence_v2
-            else
-            "loop-closure+confidence-weighted"
-            if enable_loop_closure and enable_confidence_weighting
-            else "loop-closure"
-            if enable_loop_closure
-            else "confidence-weighted"
-            if enable_confidence_weighting
-            else "base"
-        ),
+        "mode": "+".join(mode_parts) if mode_parts else "base",
         "num_poses": int(est.shape[0]),
         "accepted_transitions": int(accepted),
         "fallback_transitions": int(fallback_used),
@@ -676,6 +797,27 @@ def run_sequence(
             "loop_rot_tau_deg": float(confidence_v2_loop_rot_tau_deg),
         }
 
+    if enable_info_weighting and info_confidence_values:
+        info_arr = np.asarray(info_confidence_values, dtype=np.float64)
+        result["info_weighting"] = {
+            "enabled": True,
+            "min_confidence": float(info_min_confidence),
+            "max_confidence": float(info_max_confidence),
+            "mean_confidence": float(info_arr.mean()),
+            "min_confidence_seen": float(info_arr.min()),
+            "max_confidence_seen": float(info_arr.max()),
+        }
+
+    if degeneracy_aware:
+        result["degeneracy"] = {
+            "enabled": True,
+            "cond_ref": float(degeneracy_cond_ref),
+            "noise_max_mult": float(degeneracy_noise_max_mult),
+            "fallback_mult": float(fb_mult),
+            "inflated_odom_edges": int(degeneracy_inflated),
+            "mean_pnp_condition_accepted": float(cond_sum_accepted / max(cond_count_accepted, 1)),
+        }
+
     if skip_metrics:
         return result
 
@@ -707,6 +849,9 @@ def main() -> None:
         skip_metrics=args.skip_metrics,
         enable_loop_closure=args.enable_loop_closure,
         enable_confidence_weighting=args.enable_confidence_weighting,
+        enable_info_weighting=args.enable_info_weighting,
+        info_min_confidence=args.info_min_confidence,
+        info_max_confidence=args.info_max_confidence,
         confidence_floor=args.confidence_floor,
         confidence_power=args.confidence_power,
         confidence_min_scale=args.confidence_min_scale,
@@ -731,6 +876,10 @@ def main() -> None:
         loop_appearance_min_matches=args.loop_appearance_min_matches,
         loop_consistency_trans_m=args.loop_consistency_trans_m,
         loop_consistency_rot_deg=args.loop_consistency_rot_deg,
+        degeneracy_aware=args.degeneracy_aware,
+        degeneracy_cond_ref=args.degeneracy_cond_ref,
+        degeneracy_noise_max_mult=args.degeneracy_noise_max_mult,
+        degeneracy_fallback_mult=args.degeneracy_fallback_mult,
     )
 
 

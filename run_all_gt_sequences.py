@@ -46,6 +46,140 @@ def parse_args() -> argparse.Namespace:
         help="Enable loop-closure mode during sequence runs.",
     )
     ap.add_argument(
+        "--enable-confidence-weighting",
+        action="store_true",
+        help="Enable confidence-v1 odometry weighting during sequence runs.",
+    )
+    ap.add_argument(
+        "--enable-info-weighting",
+        action="store_true",
+        help="Enable Mo-style info weighting during sequence runs.",
+    )
+    ap.add_argument(
+        "--info-min-confidence",
+        type=float,
+        default=0.1,
+        help="Minimum confidence clamp for info-weighted odometry factors.",
+    )
+    ap.add_argument(
+        "--info-max-confidence",
+        type=float,
+        default=1.0,
+        help="Maximum confidence clamp for info-weighted odometry factors.",
+    )
+    ap.add_argument(
+        "--confidence-floor",
+        type=float,
+        default=0.08,
+        help="Lower bound for confidence-v1 weighting.",
+    )
+    ap.add_argument(
+        "--confidence-power",
+        type=float,
+        default=1.0,
+        help="Exponent applied to confidence-v1 values.",
+    )
+    ap.add_argument(
+        "--confidence-min-scale",
+        type=float,
+        default=0.85,
+        help="Minimum odometry sigma scale for confidence-v1.",
+    )
+    ap.add_argument(
+        "--confidence-max-scale",
+        type=float,
+        default=4.0,
+        help="Maximum odometry sigma scale for confidence-v1.",
+    )
+    ap.add_argument(
+        "--enable-confidence-v2",
+        action="store_true",
+        help="Enable confidence-v2 weighting with optional robust kernels.",
+    )
+    ap.add_argument(
+        "--confidence-v2-floor",
+        type=float,
+        default=0.03,
+        help="Lower bound for confidence-v2 values.",
+    )
+    ap.add_argument(
+        "--confidence-v2-power",
+        type=float,
+        default=1.5,
+        help="Exponent on confidence-v2 values.",
+    )
+    ap.add_argument(
+        "--confidence-v2-odom-min-scale",
+        type=float,
+        default=0.7,
+        help="Minimum odometry sigma scale for confidence-v2.",
+    )
+    ap.add_argument(
+        "--confidence-v2-odom-max-scale",
+        type=float,
+        default=10.0,
+        help="Maximum odometry sigma scale for confidence-v2.",
+    )
+    ap.add_argument(
+        "--confidence-v2-loop-min-scale",
+        type=float,
+        default=0.8,
+        help="Minimum loop sigma scale for confidence-v2.",
+    )
+    ap.add_argument(
+        "--confidence-v2-loop-max-scale",
+        type=float,
+        default=14.0,
+        help="Maximum loop sigma scale for confidence-v2.",
+    )
+    ap.add_argument(
+        "--confidence-v2-loop-trans-tau-m",
+        type=float,
+        default=4.0,
+        help="Translation disagreement decay (m) for confidence-v2 loop scoring.",
+    )
+    ap.add_argument(
+        "--confidence-v2-loop-rot-tau-deg",
+        type=float,
+        default=12.0,
+        help="Rotation disagreement decay (deg) for confidence-v2 loop scoring.",
+    )
+    ap.add_argument(
+        "--confidence-v2-robust-kernel",
+        choices=["none", "huber", "cauchy"],
+        default="huber",
+        help="Robust kernel used for confidence-v2 factors.",
+    )
+    ap.add_argument(
+        "--confidence-v2-robust-k",
+        type=float,
+        default=1.5,
+        help="Robust kernel width for confidence-v2 factors.",
+    )
+    ap.add_argument(
+        "--degeneracy-aware",
+        action="store_true",
+        help="Enable Alfred-style degeneracy-aware odometry scaling (loop mode only).",
+    )
+    ap.add_argument(
+        "--degeneracy-cond-ref",
+        type=float,
+        default=800.0,
+        help="Reference condition number for degeneracy scaling.",
+    )
+    ap.add_argument(
+        "--degeneracy-noise-max-mult",
+        type=float,
+        default=25.0,
+        help="Maximum odometry sigma multiplier for degeneracy-aware mode.",
+    )
+    ap.add_argument(
+        "--degeneracy-fallback-mult",
+        type=float,
+        default=None,
+        help="Fallback odometry multiplier on VO failure for degeneracy-aware mode.",
+    )
+    ap.add_argument(
         "--loop-min-separation",
         type=int,
         default=120,
@@ -188,6 +322,25 @@ def main() -> None:
             fallback_no_motion=args.fallback_no_motion,
             skip_metrics=False,
             enable_loop_closure=args.enable_loop_closure,
+            enable_confidence_weighting=args.enable_confidence_weighting,
+            enable_info_weighting=args.enable_info_weighting,
+            info_min_confidence=args.info_min_confidence,
+            info_max_confidence=args.info_max_confidence,
+            confidence_floor=args.confidence_floor,
+            confidence_power=args.confidence_power,
+            confidence_min_scale=args.confidence_min_scale,
+            confidence_max_scale=args.confidence_max_scale,
+            enable_confidence_v2=args.enable_confidence_v2,
+            confidence_v2_floor=args.confidence_v2_floor,
+            confidence_v2_power=args.confidence_v2_power,
+            confidence_v2_odom_min_scale=args.confidence_v2_odom_min_scale,
+            confidence_v2_odom_max_scale=args.confidence_v2_odom_max_scale,
+            confidence_v2_loop_min_scale=args.confidence_v2_loop_min_scale,
+            confidence_v2_loop_max_scale=args.confidence_v2_loop_max_scale,
+            confidence_v2_loop_trans_tau_m=args.confidence_v2_loop_trans_tau_m,
+            confidence_v2_loop_rot_tau_deg=args.confidence_v2_loop_rot_tau_deg,
+            confidence_v2_robust_kernel=args.confidence_v2_robust_kernel,
+            confidence_v2_robust_k=args.confidence_v2_robust_k,
             loop_min_separation=args.loop_min_separation,
             loop_search_radius_m=args.loop_search_radius_m,
             loop_max_candidates=args.loop_max_candidates,
@@ -197,6 +350,10 @@ def main() -> None:
             loop_appearance_min_matches=args.loop_appearance_min_matches,
             loop_consistency_trans_m=args.loop_consistency_trans_m,
             loop_consistency_rot_deg=args.loop_consistency_rot_deg,
+            degeneracy_aware=args.degeneracy_aware,
+            degeneracy_cond_ref=args.degeneracy_cond_ref,
+            degeneracy_noise_max_mult=args.degeneracy_noise_max_mult,
+            degeneracy_fallback_mult=args.degeneracy_fallback_mult,
         )
 
         elapsed = time.time() - seq_start

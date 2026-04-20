@@ -1,0 +1,382 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage[caption=false,font=footnotesize]{subfig}
+\usepackage{url}
+\usepackage{siunitx}
+\usepackage{hyperref}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{ragged2e}
+\usepackage{booktabs}
+\usepackage{float}
+ 
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+    pdftitle={A Comparative Study of Incremental Pose-Graph SLAM Variants for KITTI Odometry},
+    pdfpagemode=FullScreen,
+    }
+ 
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+ 
+\title{A Comparative Study of Incremental Pose-Graph SLAM Variants for KITTI Odometry\\
+\large Stereo Visual Odometry and iSAM2 with Loop Closure, Confidence-Aware, Degeneracy-Aware, and Information-Aware Weighting.}
+\author{Project Report}
+
+%%%%%%%%%%%%%%%%%%%%%%%% AUTHORS %%%%%%%%%%%%%%%%%%%%%%%%
+
+\author{\IEEEauthorblockN{Ansh Mehta}
+\IEEEauthorblockA{\textit{Student} \\
+\textit{University of Michigan}\\
+Ann Arbor, MI \\
+anshm@umich.edu}
+\and
+\IEEEauthorblockN{Mubashir Farooqi}
+\IEEEauthorblockA{\textit{MEng Automotive Engineering} \\
+\textit{University of Michigan}\\
+Ann Arbor, MI \\
+mubashir@umich.edu}
+\and
+\IEEEauthorblockN{Alfred Huang}
+\IEEEauthorblockA{\textit{Student} \\
+\textit{University of Michigan}\\
+Ann Arbor, MI \\
+alfredhx@umich.edu}
+\and
+\IEEEauthorblockN{Mohammad Naqvi}
+\IEEEauthorblockA{\textit{Student} \\
+\textit{University of Michigan}\\
+Ann Arbor, MI \\
+mohnaqvi@umich.edu}
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%% DO NOT EDIT ABOVE CODE %%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\begin{document}
+\maketitle
+ 
+ 
+%%%%%%%%%%%%%%%%%%%%%%%% ABSTRACT %%%%%%%%%%%%%%%%%%%%%%%%
+ 
+ 
+\begin{abstract}
+This paper presents a detailed analysis of a complete stereo visual odometry (VO) and incremental smoothing (iSAM2) pipeline implemented for KITTI odometry. We evaluate nine methods across a unified evaluation protocol: (M1) base iSAM2, (M2) loop closure, (M3) confidence-weighted odometry (v1), (M4) loop closure + confidence (v1), (M5) confidence-v2, (M6) loop closure + confidence-v2 with robust kernels, (M7) degeneracy-aware odometry weighting, (M8) degeneracy-aware + loop closure, and (M9) information-weighted odometry + loop closure. All methods share the same frontend and metrics pipeline; they differ in factor graph construction and noise modeling.
+ 
+On KITTI sequence 00 (all 4541 frames, SE(3)-aligned evaluation), M6 is the strongest method in the tested configuration, improving translation RMSE by \SI{31.69}{\percent} and rotation RMSE by \SI{12.76}{\percent} versus base iSAM2. Under the tested hyperparameters, confidence-only and degeneracy-only variants without loop closure produce results numerically identical to base, indicating limited leverage in chain-only factor graphs for these tunings. The information-weighted + loop mode (M9) remains close to standard loop closure (M2), while degeneracy-aware + loop (M8) is substantially worse than base, highlighting that odometry uncertainty scaling alone does not compensate for poor loop constraints. The study includes implementation-level methodology, comparative analysis, and a diagnosis of the M8 failure mode.
+\end{abstract}
+ 
+ 
+%%%%%%%%%%%%%%%%%%%%%%%% INTRODUCTION %%%%%%%%%%%%%%%%%%%%%%%%
+ 
+ 
+\section{Introduction}
+Simultaneous Localization and Mapping (SLAM) is a foundational robotics problem: estimate platform trajectory while maintaining map consistency under noisy sensing and partial observability \cite{durrant2006slam,cadena2016slam}. In visual SLAM, drift accumulation becomes severe over long trajectories because local frame-to-frame errors compound globally.
+ 
+This project addresses that challenge through a pose-graph backend optimized by iSAM2 \cite{kaess2012isam2,kaess2008isam}. The work is not a new frontend; rather, it is a systematic investigation of backend factor design and uncertainty weighting strategies, implemented and evaluated end-to-end on KITTI sequence 00 \cite{geiger2012kitti}. Our contributions are: (i) a complete modular stereo VO + pose-graph pipeline; (ii) nine controlled method variants that ablate loop closure, confidence weighting, degeneracy-aware scaling, and information-based weighting; (iii) a confidence-v2 design that jointly reweights odometry and loop factors under robust kernels; and (iv) quantitative and qualitative analysis, including a three-factor diagnosis of the degeneracy-aware + loop closure failure mode. 
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%% RELATED WORKS %%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+ 
+\section{Related Work}
+\textbf{Graph-based SLAM and incremental smoothing.}
+Graph formulations cast SLAM as nonlinear least squares over pose variables and relative constraints \cite{grisetti2010graph}. iSAM and iSAM2 provide incremental updates using Bayes tree structure, enabling efficient online relinearization and updates \cite{kaess2008isam,kaess2012isam2}.
+ 
+\textbf{Feature-based visual odometry.}
+ORB-style pipelines remain widely used due to favorable speed/accuracy tradeoffs in large-scale outdoor settings \cite{rublee2011orb,murartal2017orbslam2}. Typical designs rely on stereo triangulation and PnP/RANSAC for frame-to-frame motion estimation \cite{lepetit2009epnp}.
+ 
+\textbf{Loop closure and robustness.}
+Loop closure is central to long-horizon consistency but can degrade maps if false positives pass gating \cite{cummins2008fabmap,murartal2017orbslam2}. Robust M-estimators (Huber, Cauchy) are standard tools for reducing outlier leverage in nonlinear least squares \cite{huber1964robust}.
+ 
+\textbf{Trajectory evaluation.}
+We follow standard SE(3)-aligned absolute trajectory error (ATE) and relative pose error (RPE) conventions popularized by Sturm et al. \cite{sturm2012tum} and discussed extensively by Zhang and Scaramuzza \cite{zhang2018evaluation}.
+
+
+
+ 
+%%%%%%%%%%%%%%%%%%%%%%%% METHODOLOGY %%%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+
+\section{Methodology}
+\subsection{State and optimization formulation}
+Let the trajectory be $X = \{T_0, T_1, \ldots, T_N\}$ with $T_i \in SE(3)$. Throughout, $\Sigma$ denotes a covariance (not information) matrix; the Mahalanobis norm is written $\|r\|^2_{\Sigma^{-1}} = r^\top \Sigma^{-1} r$. The pose graph objective is
+\begin{equation}
+\begin{aligned}
+\hat{X}=\arg\min_X \Big[
+&\sum_{(i,j)\in \mathcal{E}_o} \|r^o_{ij}(X)\|^2_{\Sigma^{-1}_{ij}} \\
+&+\sum_{(p,q)\in \mathcal{E}_\ell} \|r^\ell_{pq}(X)\|^2_{\Lambda^{-1}_{pq}} \\
+&+\|r_0(X)\|^2_{\Gamma^{-1}}
+\Big],
+\end{aligned}
+\end{equation}
+where $\mathcal{E}_o$ are odometry edges, $\mathcal{E}_\ell$ are loop edges, and $r_0$ is the anchor prior on $T_0$. $\Sigma_{ij}$, $\Lambda_{pq}$, and $\Gamma$ are the covariances of odometry factors, loop factors, and the prior, respectively. All method variants (M1--M9) use this same objective class; they differ in (i) which edges are added and (ii) how edge covariances are scaled.
+ 
+\subsection{Frontend measurement model}
+Given stereo images at frame $k-1$ and left image at frame $k$:
+\begin{enumerate}
+    \item Detect ORB keypoints and descriptors \cite{rublee2011orb}.
+    \item Match left--right descriptors in frame $k-1$; triangulate sparse 3D points.
+    \item Match descriptors from frame $k-1$ to frame $k$ to form 2D--3D correspondences.
+    \item Estimate relative transform with \texttt{solvePnPRansac} \cite{lepetit2009epnp}.
+\end{enumerate}
+ 
+If loop verification PnP fails, a 2D--2D essential matrix fallback is used via epipolar geometry \cite{nister2004fivepoint}. Essential-matrix decomposition yields rotation but only a unit-norm translation direction; scale is then recovered by projecting the current iSAM2 graph estimate of the translation between the two loop endpoints onto this direction, preserving the graph's metric scale rather than introducing an arbitrary one.
+ 
+\subsection{Loop candidate generation and gating}
+For each current frame $i$, candidates $j < i$ are filtered by: (1)~temporal separation (candidate must precede current frame by at least $N_{\text{sep}}$ frames); (2)~spatial proximity in estimated trajectory coordinates (Euclidean distance below $d_{\text{loop}}$); (3)~optional appearance-based retrieval fallback using descriptor similarity; (4)~geometric verification and PnP inlier count above $n_{\text{inlier,min}}$; (5)~consistency checks against current graph estimate (translation disagreement below $\tau_t^{\text{gate}}$ and rotation disagreement below $\tau_r^{\text{gate}}$). Only accepted candidates produce loop factors.
+ 
+\subsection{Confidence and information weighting strategies}
+In all scaling rules below, $s$ is applied as a \emph{standard-deviation multiplier}: the scaled covariance is $\Sigma' = s^2 \Sigma_{\text{base}}$. This convention is preserved across v1, v2, degeneracy-aware, and information-weighted variants, and is made explicit for each rule where the mapping from $c$ to $s$ has a different exponent.
+ 
+\subsubsection{Confidence v1 (methods M3, M4)}
+For raw confidence $c_{\text{raw}} = n_{\text{inlier}} / n_{\text{match}}$, $c = \mathrm{clip}(c_{\text{raw}}, c_{\min}, 1)^{\alpha}$, and the standard-deviation scale is
+\begin{equation}
+ s_{v1} = \mathrm{clip}\!\left(1/\sqrt{c},\ s_{\min}, s_{\max}\right),
+\end{equation}
+giving an effective covariance scale of $s_{v1}^2 = 1/c$. Only odometry factors are reweighted in v1; loop factors, when present in M4, retain base noise.
+ 
+\subsubsection{Confidence v2 (methods M5, M6)}
+Confidence-v2 uses stronger standard-deviation scaling,
+\begin{equation}
+ s_{v2} = \mathrm{clip}\!\left(1/c,\ s_{\min}, s_{\max}\right),
+\end{equation}
+corresponding to an effective covariance scale of $s_{v2}^2 = 1/c^2$, and applies weighting to both odometry and loop factors. Loop confidence incorporates consistency penalties:
+\begin{equation}
+ c_{\ell} = c_{\text{raw},\ell} \cdot e^{-\Delta t / \tau_t} \cdot e^{-\Delta r / \tau_r},
+\label{eq:loop_confidence}
+\end{equation}
+where $c_{\text{raw},\ell}$ is the PnP inlier ratio of the loop verification, $\Delta t$ is the Euclidean translation disagreement (m) between the loop-measured relative pose and the graph-implied relative pose, $\Delta r$ is the geodesic rotation disagreement (rad) between the same two poses, and $\tau_t$, $\tau_r$ are scale constants. $c_{\ell}$ is clipped to $[c_{\min},1]$ before being mapped to $s_{\ell}$ using the same rule as $s_{v2}$.
+ 
+\subsubsection{Information-based weighting (method M9)}
+The information-weighted variant computes odometry confidence from three VO signals: inlier ratio, inlier count, and mean reprojection error $\bar{e}_{\text{reproj}}$ (pixels). Normalized scores are
+\begin{equation}
+ s_{\text{ratio}} = \mathrm{clip}\!\left(\tfrac{n_{\text{inlier}}/n_{\text{match}} - r_{\text{lo}}}{r_{\text{hi}} - r_{\text{lo}}}, 0, 1\right),
+\end{equation}
+\begin{equation}
+ s_{\text{count}} = \mathrm{clip}\!\left(\tfrac{n_{\text{inlier}} - N_{\text{lo}}}{N_{\text{hi}} - N_{\text{lo}}}, 0, 1\right),
+\end{equation}
+\begin{equation}
+ s_{\text{reproj}} = \mathrm{clip}\!\left(\tfrac{e_{\text{hi}} - \bar{e}_{\text{reproj}}}{e_{\text{hi}} - e_{\text{lo}}}, 0, 1\right).
+\end{equation}
+The knee/saturation constants $(r_{\text{lo}}, r_{\text{hi}}, N_{\text{lo}}, N_{\text{hi}}, e_{\text{lo}}, e_{\text{hi}})$ correspond to the numeric constants $(0.5, 1.0, 50, 500, 0.7, 2.0)$ used in the implementation. Confidence is then the geometric mean
+\begin{equation}
+ c_{\text{info}} = c_{\min} + (c_{\max} - c_{\min}) \left(s_{\text{ratio}}\,s_{\text{count}}\,s_{\text{reproj}}\right)^{1/3},
+\end{equation}
+and odometry standard deviation is scaled as $\sigma'_{\text{odom}} = \sigma_{\text{base}} / \sqrt{c_{\text{info}}}$, equivalently $\Sigma'_{\text{odom}} = \Sigma_{\text{base}} / c_{\text{info}}$. Loop factors retain fixed noise; only odometry edges are information-weighted.
+ 
+\subsubsection{Degeneracy-aware odometry weighting (methods M7, M8)}
+The degeneracy-aware extension computes an observability proxy from the stereo PnP Jacobian $J \in \mathbb{R}^{2n_{\text{inlier}} \times 6}$, evaluated at the PnP solution. The condition number
+\begin{equation}
+\kappa = \lambda_{\max}(J^{\top}J) \,/\, \lambda_{\min}(J^{\top}J)
+\end{equation}
+is a scalar summary of observability. Because $J^{\top}J$ couples translation and rotation DoFs, a scalar $\kappa$ cannot distinguish between translation-weak and rotation-weak geometries; it is used as a first-order proxy rather than a full observability analysis. Per-edge odometry standard deviation is scaled as
+\begin{equation}
+s_{\text{deg}} = \min\!\left(s_{\max},\ \sqrt{\max\!\left(1,\ \kappa / \kappa_{\text{ref}}\right)}\right),
+\end{equation}
+where $\kappa_{\text{ref}}$ is a reference condition number below which the edge is considered well-conditioned and $s_{\max}$ is a hard cap on inflation. This weakens ill-conditioned odometry factors without changing their relative-pose estimate.
+ 
+\subsubsection{Robust kernels}
+Confidence-v2 optionally wraps weighted factors with robust M-estimators (Huber or Cauchy) \cite{huber1964robust}. For a residual $r$ and scaled covariance $\Sigma_{\text{scaled}}$, the factor cost becomes $\rho\!\left(\|r\|^2_{\Sigma^{-1}_{\text{scaled}}}\right)$, which limits outlier leverage after insertion.
+ 
+ 
+%%%%%%%%%%%%%%%%%%%%%%%% EXPERIMENTAL SETUP %%%%%%%%%%%%%%%%%%%%%%%%
+ 
+ 
+\section{Experimental Setup}
+Experiments use KITTI odometry \cite{geiger2012kitti}, sequence 00, all 4541 poses. Evaluation uses Absolute Trajectory Error (ATE) under SE(3) Umeyama alignment \cite{sturm2012tum,zhang2018evaluation}. The pipeline is implemented in Python with NumPy, OpenCV, Matplotlib, SciPy, and GTSAM. Reproduction assets (single- and batch-run scripts, exported trajectories, per-method plots, and summary JSON files) are provided in the repository \texttt{output/} directory; drivers include \texttt{run\_isam2\_kitti.py}, \texttt{eval/compute\_kitti\_metrics.py}, and \texttt{plot\_estimate\_vs\_gt.py}.
+ 
+ 
+%%%%%%%%%%%%%%%%%%%%%%%% RESULTS %%%%%%%%%%%%%%%%%%%%%%%%
+ 
+\section{Results}
+Table~\ref{tab:main_ablation} reports the nine-method comparison on sequence 00 (all frames). Signs in the ``Change vs base'' column are signed changes in error: negative values indicate error \emph{reduction} (improvement), positive values indicate error \emph{increase} (degradation). Fig.~\ref{fig:six_method_rmse} summarizes the same numbers as a bar chart. Fig.~\ref{fig:key_trajectories} contrasts the trajectories of the baseline (M1), the best method (M6), and the failure case (M8).
+ 
+\begin{table}[!tbp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\caption{Sequence 00 all-frame comparison (SE(3)-aligned). Percent values are signed changes in error: negative $=$ improvement, positive $=$ degradation.}
+\label{tab:main_ablation}
+\begin{tabularx}{\columnwidth}{@{}>{\RaggedRight\arraybackslash}p{0.30\columnwidth}cc>{\RaggedRight\arraybackslash}X@{}}
+\toprule
+Method & Trans RMSE (m) & Rot RMSE (deg) & Change vs base (trans / rot) \\
+\midrule
+M1 Base                & 32.7519 & 10.4945 & --- \\
+M2 Loop closure        & 29.9193 & 12.8668 & $-8.65\%$ / $+22.60\%$ \\
+M3 Confidence (v1)     & 32.7519 & 10.4945 & $0.00\%$ / $0.00\%$ \\
+M4 Loop + conf. (v1)   & 29.9251 & 12.9170 & $-8.63\%$ / $+23.08\%$ \\
+M5 Confidence-v2       & 32.7519 & 10.4945 & $0.00\%$ / $0.00\%$ \\
+M6 Loop + conf.-v2     & 22.3712 &  9.1553 & $\mathbf{-31.69\%}$ / $\mathbf{-12.76\%}$ \\
+M7 Degeneracy-aware    & 32.7519 & 10.4945 & $0.00\%$ / $0.00\%$ \\
+M8 Degen. + loop       & 41.1632 & 15.6342 & $+25.68\%$ / $+48.97\%$ \\
+M9 Info-weighted + loop& 30.1566 & 12.9572 & $-7.92\%$ / $+23.46\%$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+ 
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\linewidth]{seq00_methods_rmse.png}
+    \caption{Nine-method RMSE comparison on sequence 00 (all frames). Method IDs M1--M9 follow Table~\ref{tab:main_ablation}.}
+    \label{fig:six_method_rmse}
+\end{figure}
+ 
+\begin{figure*}[!tbp]
+    \centering
+    \subfloat[M1 Base iSAM2 (baseline).]{\includegraphics[width=0.85\textwidth]{base_seq_00_comparison.png}}\\[0.6em]
+    \subfloat[M6 Loop + confidence-v2 (best).]{\includegraphics[width=0.85\textwidth]{loop_conf2_seq_00_comparison.png}}\\[0.6em]
+    \subfloat[M8 Degeneracy-aware + loop (worst).]{\includegraphics[width=0.85\textwidth]{deg_loop_seq_00_comparison.png}}
+    \caption{Trajectory and per-frame error diagnostics for the three representative methods: baseline (M1), best performer (M6), and the degeneracy-aware + loop failure case (M8). Per-method diagnostics for the remaining six methods (M2, M3, M4, M5, M7, M9) are available in the project repository \texttt{README}.}
+    \label{fig:key_trajectories}
+\end{figure*}
+ 
+ 
+%%%%%%%%%%%%%%%%%%%%%%%% DSICUSSION %%%%%%%%%%%%%%%%%%%%%%%%
+ 
+ 
+\section{Discussion}
+\subsection{Confidence-only and degeneracy-only variants match base}
+Methods M3, M5, and M7 do not add loop edges. In this graph topology, the optimization is dominated by a single odometry chain; reweighting chain factors changes uncertainty interpretation but has limited ability to alter globally aligned trajectory shape. Under the tested tuning, per-edge multipliers remained close to unity for most frames: a majority of edges had $c$ above the saturation threshold, so scaled noise equaled base noise and the optimum was numerically identical to M1. We interpret this as a tuning outcome rather than a structural property; more aggressive values of $(c_{\min}, s_{\max})$ or a lower $\kappa_{\text{ref}}$ would likely perturb the estimate, though not necessarily beneficially.
+ 
+\subsection{Loop closure helps translation but can hurt rotation}
+M2 and M4 improve translation error but worsen rotation. Loop constraints provide useful positional corrections but can inject rotational inconsistency when candidate quality is mixed. Visually, the loop-corrected trajectories close large-scale drift while picking up small orientation snaps near loop insertion points.
+ 
+\subsection{Loop + confidence-v2 is strongest}
+M6 jointly addresses both issues: (i) aggressive confidence scaling suppresses weak constraints, (ii) loop factors are themselves confidence-weighted (unlike v1), and (iii) robust kernels cap outlier influence. The combined effect is improved translation \emph{and} rotation relative to base, the only method variant tested that improves both axes simultaneously.
+ 
+\subsection{Diagnosing M8: degeneracy-aware + loop underperforms}
+M8 is substantially worse than both base and loop-only: translation RMSE rises from \SI{32.75}{m} to \SI{41.16}{m} ($+25.68\%$) and rotation RMSE from \ang{10.49} to \ang{15.63} ($+48.97\%$). Per-edge log outputs reveal three contributing factors. First, \emph{loop factors retain fixed noise}: M8 inherits M2's loop-factor configuration, so the fixed-noise assumption on loop edges is unchanged, while odometry edges with high $\kappa$ are down-weighted by $s_{\text{deg}} > 1$. This increases the \emph{relative} trust of loop factors, amplifying the effect of borderline-gated but imperfect loop constraints. Second, \emph{condition-number inflation concentrates on forward motion}: for straight forward driving with few lateral parallax cues, $\lambda_{\min}(J^{\top}J)$ for the lateral-rotation DoF is small, making $\kappa$ large even when the PnP solution is acceptable. We learned that such edges are common in KITTI 00. Third, \emph{$\kappa_{\text{ref}}$ is under-tuned}: the fixed $\kappa_{\text{ref}}$ used in our runs was chosen from a small exploratory sweep on a different subsequence. Post hoc inspection suggests that a higher $\kappa_{\text{ref}}$ or a smaller $s_{\max}$ cap would reduce the odometry-vs-loop trust imbalance. Together, a scalar observability proxy that conflates DoFs, a threshold that fires too often, and fixed-noise loop factors that absorb the freed uncertainty budget, these effects constitute a failure mode specific to the interaction between degeneracy-aware odometry weighting and unweighted loop constraints. Degeneracy-aware weighting should either be paired with confidence-weighted loop factors (as in M6) or combined with a DoF-aware observability proxy rather than a scalar $\kappa$.
+ 
+\subsection{Information-weighted + loop closure is close to the loop baseline}
+M9 applies per-edge scaling to odometry factors only, while loop factors remain fixed-noise. On sequence 00, M9 is numerically close to M2 (\SI{30.16}{m} vs. \SI{29.92}{m} translation RMSE; \ang{12.96} vs. \ang{12.87} rotation RMSE). With the tuning used, $c_{\text{info}}$ saturated near $1.0$ for most frames, so odometry scaling was mild and topology-level behavior remained loop-dominated. Information-weighting odometry alone, without also weighting loop factors, is insufficient to materially alter loop-dominated global behavior which mirrors the v1-vs-v2 comparison.
+ 
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%% LIMITATIONS %%%%%%%%%%%%%%%%%%%%%%%%
+ 
+ 
+\section{Limitations}
+\begin{enumerate}
+    \item \textbf{Single full-horizon primary benchmark.} Claims are based on seq00 all-frame evaluation. KITTI~00 is a loop-rich urban sequence particularly favorable to loop closure; results on straight highway sequences (01) or less loopy routes (08, 10) may differ.
+    \item \textbf{Hyperparameter dependence.} Confidence-v2 gains and M8's failure magnitude may vary with loop thresholds, scale bounds, robust-kernel width, and $\kappa_{\text{ref}}$. A sensitivity study is not included.
+    \item \textbf{No external baseline comparison.} Methods are compared internally; external systems (e.g., ORB-SLAM2 full pipeline) are not benchmarked here.
+\end{enumerate}
+ 
+ 
+%%%%%%%%%%%%%%%%%%%%%%%% CONCLUSION %%%%%%%%%%%%%%%%%%%%%%%%
+ 
+ 
+\section{Conclusion}
+This project demonstrates a complete, modular stereo VO + iSAM2 SLAM pipeline with confidence-aware, degeneracy-aware, and information-weighted uncertainty modeling extensions. The principal finding, in the tested configuration on KITTI sequence~00, is that local odometry reweighting alone (confidence-only, degeneracy-only, or info-weighted odometry with fixed loop noise) is not beneficial in a chain-dominated graph, whereas loop-aware weighting combined with robust kernels is impactful. On sequence 00 (all 4541 poses), loop + confidence-v2 (M6) is the best tested configuration, reducing translation RMSE by \SI{31.69}{\percent} and rotation RMSE by \SI{12.76}{\percent} compared with base iSAM2. In contrast, degeneracy-aware + loop closure (M8) is substantially worse than base; our analysis attributes this to fixed-noise loop factors absorbing the uncertainty budget freed by odometry down-weighting, compounded by a scalar $\kappa$ proxy that over-fires on forward-driving geometries. The information-weighted + loop closure variant (M9) remains close to standard loop closure, underscoring the importance of also weighting loop factors rather than odometry alone. Future work should validate these gains across additional full-horizon sequences, perform a multi-seed variance study, tune confidence calibration, develop DoF-aware observability proxies to replace scalar $\kappa$, and incorporate switchable/DCS formulations \cite{sunderhauf2012switchable,agarwal2013dcs} to further reduce false-positive loop factors.
+ 
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%% BILIOGRAPHY %%%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+ 
+\begin{thebibliography}{99}
+ 
+\bibitem{durrant2006slam}
+H. Durrant-Whyte and T. Bailey,
+``Simultaneous localization and mapping: part I,''
+\emph{IEEE Robotics \& Automation Magazine}, vol.~13, no.~2, pp.~99--110, 2006.
+ 
+\bibitem{cadena2016slam}
+C. Cadena, L. Carlone, H. Carrillo, Y. Latif, D. Scaramuzza, J. Neira, I. Reid, and J. J. Leonard,
+``Past, present, and future of simultaneous localization and mapping: Toward the robust-perception age,''
+\emph{IEEE Transactions on Robotics}, vol.~32, no.~6, pp.~1309--1332, 2016.
+ 
+\bibitem{grisetti2010graph}
+G. Grisetti, R. K\"ummerle, C. Stachniss, and W. Burgard,
+``A tutorial on graph-based SLAM,''
+\emph{IEEE Intelligent Transportation Systems Magazine}, vol.~2, no.~4, pp.~31--43, 2010.
+ 
+\bibitem{kaess2008isam}
+M. Kaess, A. Ranganathan, and F. Dellaert,
+``iSAM: Incremental smoothing and mapping,''
+\emph{IEEE Transactions on Robotics}, vol.~24, no.~6, pp.~1365--1378, 2008.
+ 
+\bibitem{kaess2012isam2}
+M. Kaess, H. Johannsson, R. Roberts, V. Ila, J. J. Leonard, and F. Dellaert,
+``iSAM2: Incremental smoothing and mapping using the Bayes tree,''
+\emph{The International Journal of Robotics Research}, vol.~31, no.~2, pp.~216--235, 2012.
+ 
+\bibitem{rublee2011orb}
+E. Rublee, V. Rabaud, K. Konolige, and G. Bradski,
+``ORB: An efficient alternative to SIFT or SURF,''
+in \emph{Proc.\ IEEE Int.\ Conf.\ Computer Vision (ICCV)}, 2011, pp.~2564--2571.
+ 
+\bibitem{lepetit2009epnp}
+V. Lepetit, F. Moreno-Noguer, and P. Fua,
+``EPnP: An accurate O(n) solution to the PnP problem,''
+\emph{International Journal of Computer Vision}, vol.~81, no.~2, pp.~155--166, 2009.
+ 
+\bibitem{nister2004fivepoint}
+D. Nist\'er,
+``An efficient solution to the five-point relative pose problem,''
+\emph{IEEE Transactions on Pattern Analysis and Machine Intelligence}, vol.~26, no.~6, pp.~756--770, 2004.
+ 
+\bibitem{geiger2012kitti}
+A. Geiger, P. Lenz, and R. Urtasun,
+``Are we ready for autonomous driving? The KITTI vision benchmark suite,''
+in \emph{Proc.\ IEEE Conf.\ Computer Vision and Pattern Recognition (CVPR)}, 2012, pp.~3354--3361.
+ 
+\bibitem{cummins2008fabmap}
+M. Cummins and P. Newman,
+``FAB-MAP: Probabilistic localization and mapping in the space of appearance,''
+\emph{The International Journal of Robotics Research}, vol.~27, no.~6, pp.~647--665, 2008.
+ 
+\bibitem{murartal2017orbslam2}
+R. Mur-Artal and J. D. Tard\'os,
+``ORB-SLAM2: An open-source SLAM system for monocular, stereo, and RGB-D cameras,''
+\emph{IEEE Transactions on Robotics}, vol.~33, no.~5, pp.~1255--1262, 2017.
+ 
+\bibitem{huber1964robust}
+P. J. Huber,
+``Robust estimation of a location parameter,''
+\emph{The Annals of Mathematical Statistics}, vol.~35, no.~1, pp.~73--101, 1964.
+ 
+\bibitem{sunderhauf2012switchable}
+N. S\"underhauf and P. Protzel,
+``Switchable constraints for robust pose graph SLAM,''
+in \emph{Proc.\ IEEE/RSJ Int.\ Conf.\ Intelligent Robots and Systems (IROS)}, 2012, pp.~1879--1884.
+ 
+\bibitem{agarwal2013dcs}
+P. Agarwal, G. D. Tipaldi, L. Spinello, C. Stachniss, and W. Burgard,
+``Robust map optimization using dynamic covariance scaling,''
+in \emph{Proc.\ IEEE Int.\ Conf.\ Robotics and Automation (ICRA)}, 2013, pp.~62--69.
+ 
+\bibitem{sturm2012tum}
+J. Sturm, N. Engelhard, F. Endres, W. Burgard, and D. Cremers,
+``A benchmark for the evaluation of RGB-D SLAM systems,''
+in \emph{Proc.\ IEEE/RSJ Int.\ Conf.\ Intelligent Robots and Systems (IROS)}, 2012, pp.~573--580.
+ 
+\bibitem{zhang2018evaluation}
+Z. Zhang and D. Scaramuzza,
+``A tutorial on quantitative trajectory evaluation for visual(-inertial) odometry,''
+in \emph{Proc.\ IEEE/RSJ Int.\ Conf.\ Intelligent Robots and Systems (IROS)}, 2018, pp.~7244--7251.
+ 
+\end{thebibliography}
+ 
+\end{document}

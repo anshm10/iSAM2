@@ -1,0 +1,143 @@
+{
+  "created_at_utc": "2026-04-19T23:53:15.927900+00:00",
+  "repo_root": "/home/anshm/eecs568_proj",
+  "dry_run": false,
+  "entries": [
+    {
+      "label": "main_base_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/output/base_seq00_allframes",
+      "target": "/home/anshm/eecs568_proj/output/experiments/base/seq00_allframes",
+      "files": 4,
+      "bytes": 1189288
+    },
+    {
+      "label": "main_loop_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/output/loop_seq00_allframes",
+      "target": "/home/anshm/eecs568_proj/output/experiments/loop_closure/seq00_allframes",
+      "files": 4,
+      "bytes": 1186114
+    },
+    {
+      "label": "main_conf_v1_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/output/confidence_seq00_allframes",
+      "target": "/home/anshm/eecs568_proj/output/experiments/confidence_v1/seq00_allframes",
+      "files": 4,
+      "bytes": 1189309
+    },
+    {
+      "label": "main_conf_v2_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/output/confidence_v2_seq00_allframes",
+      "target": "/home/anshm/eecs568_proj/output/experiments/confidence_v2/seq00_allframes",
+      "files": 4,
+      "bytes": 1189317
+    },
+    {
+      "label": "main_loop_conf_v1_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/output/loop_conf_seq00_allframes",
+      "target": "/home/anshm/eecs568_proj/output/experiments/loop_closure_confidence_v1/seq00_allframes",
+      "files": 4,
+      "bytes": 1185563
+    },
+    {
+      "label": "main_loop_conf_v2_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/output/loop_conf_v2_seq00_allframes",
+      "target": "/home/anshm/eecs568_proj/output/experiments/loop_closure_confidence_v2/seq00_allframes",
+      "files": 4,
+      "bytes": 1173450
+    },
+    {
+      "label": "main_batch_gt_smoke",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/output/batch_gt_smoke",
+      "target": "/home/anshm/eecs568_proj/output/experiments/base/batch_gt_smoke",
+      "files": 36,
+      "bytes": 1558922
+    },
+    {
+      "label": "main_method_compare_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/output/method_compare_seq00",
+      "target": "/home/anshm/eecs568_proj/output/comparisons/method_compare_seq00",
+      "files": 2,
+      "bytes": 90584
+    },
+    {
+      "label": "main_method_compare_seq00_w_deg",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/output/method_compare_seq00_w_deg",
+      "target": "/home/anshm/eecs568_proj/output/comparisons/method_compare_seq00_w_deg",
+      "files": 2,
+      "bytes": 113644
+    },
+    {
+      "label": "main_method_compare_seq00_w_deg_info",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/output/method_compare_seq00_w_deg_info",
+      "target": "/home/anshm/eecs568_proj/output/comparisons/method_compare_seq00_w_deg_info",
+      "files": 2,
+      "bytes": 66090
+    },
+    {
+      "label": "alfred_degeneracy_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/ALFRED_iSAM2-degeneracy2.0/output/degeneracy_seq00_allframes",
+      "target": "/home/anshm/eecs568_proj/output/experiments/degeneracy/seq00_allframes",
+      "files": 4,
+      "bytes": 1192552
+    },
+    {
+      "label": "alfred_degeneracy_loop_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/ALFRED_iSAM2-degeneracy2.0/output/degeneracy_loop_seq00_allframes",
+      "target": "/home/anshm/eecs568_proj/output/experiments/degeneracy_loop/seq00_allframes",
+      "files": 4,
+      "bytes": 1194689
+    },
+    {
+      "label": "mo_baseline_no_loops_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/MO_iSAM2-info_weight/output/baseline_no_loops",
+      "target": "/home/anshm/eecs568_proj/output/experiments/mo_baseline_no_loops/seq00_allframes",
+      "files": 0,
+      "bytes": 0
+    },
+    {
+      "label": "mo_baseline_with_loops_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/MO_iSAM2-info_weight/output/baseline_with_loops",
+      "target": "/home/anshm/eecs568_proj/output/experiments/mo_baseline_with_loops/seq00_allframes",
+      "files": 0,
+      "bytes": 0
+    },
+    {
+      "label": "mo_infoweighted_loop_seq00",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/MO_iSAM2-info_weight/output/infoweighted_with_loops",
+      "target": "/home/anshm/eecs568_proj/output/experiments/info_weighted_loop/seq00_allframes",
+      "files": 6,
+      "bytes": 1195239
+    },
+    {
+      "label": "mo_diff_summary",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/MO_iSAM2-info_weight/output/difference_summary.json",
+      "target": "/home/anshm/eecs568_proj/output/comparisons/mo/difference_summary.json",
+      "files": 1,
+      "bytes": 1441
+    },
+    {
+      "label": "mo_seq00_summary_plot",
+      "status": "copied",
+      "source": "/home/anshm/eecs568_proj/MO_iSAM2-info_weight/output/seq00_ate_summary_bars.png",
+      "target": "/home/anshm/eecs568_proj/output/comparisons/mo/seq00_ate_summary_bars.png",
+      "files": 1,
+      "bytes": 55516
+    }
+  ]
+}

@@ -191,10 +191,38 @@ class Isam2PoseGraph:
         )
         return gtsam.noiseModel.Diagonal.Sigmas(self.loop_sigmas * scale)
 
-    def add_odometry(self, prev_idx: int, curr_idx: int, t_prev_to_curr: np.ndarray) -> IsamUpdateStats:
+    def add_odometry(
+        self,
+        prev_idx: int,
+        curr_idx: int,
+        t_prev_to_curr: np.ndarray,
+        odom_noise_scale: float = 1.0,
+    ) -> IsamUpdateStats:
         if curr_idx != prev_idx + 1:
             raise ValueError("Only consecutive frame factors are supported in this baseline")
-        return self._add_odometry_with_noise(prev_idx, curr_idx, t_prev_to_curr, self.odom_noise)
+        scale = float(odom_noise_scale)
+        if scale <= 0.0 or not np.isfinite(scale):
+            raise ValueError("odom_noise_scale must be positive and finite")
+
+        if abs(scale - 1.0) < 1e-12:
+            odom_noise = self.odom_noise
+        else:
+            odom_noise = gtsam.noiseModel.Diagonal.Sigmas(self.odom_sigmas * scale)
+        return self._add_odometry_with_noise(prev_idx, curr_idx, t_prev_to_curr, odom_noise)
+
+    def add_odometry_weighted(
+        self,
+        prev_idx: int,
+        curr_idx: int,
+        t_prev_to_curr: np.ndarray,
+        confidence: float,
+    ) -> IsamUpdateStats:
+        if curr_idx != prev_idx + 1:
+            raise ValueError("Only consecutive frame factors are supported in this baseline")
+
+        scale = 1.0 / np.sqrt(max(float(confidence), 1e-6))
+        scaled_noise = gtsam.noiseModel.Diagonal.Sigmas(self.odom_sigmas * scale)
+        return self._add_odometry_with_noise(prev_idx, curr_idx, t_prev_to_curr, scaled_noise)
 
     def add_odometry_confidence_weighted(
         self,
@@ -272,3 +300,24 @@ class Isam2PoseGraph:
                 raise KeyError(f"Estimate missing node X({i})")
             mats.append(_matrix_from_pose3(estimate.atPose3(X(i))))
         return np.stack(mats, axis=0)
+
+
+def compute_confidence(
+    inliers: int,
+    total_matches: int,
+    mean_reproj_error: float,
+    *,
+    min_confidence: float = 0.1,
+    max_confidence: float = 1.0,
+) -> float:
+    """Map VO quality signals to confidence in [min_confidence, max_confidence]."""
+    if total_matches <= 0:
+        return float(min_confidence)
+
+    s_ratio = np.clip((inliers / total_matches - 0.5) / 0.5, 0.0, 1.0)
+    s_count = np.clip((inliers - 50) / 450.0, 0.0, 1.0)
+    s_reproj = np.clip((2.0 - mean_reproj_error) / 1.3, 0.0, 1.0)
+
+    raw = float((s_ratio * s_count * s_reproj) ** (1.0 / 3.0))
+    conf = min_confidence + (max_confidence - min_confidence) * raw
+    return float(np.clip(conf, min_confidence, max_confidence))
